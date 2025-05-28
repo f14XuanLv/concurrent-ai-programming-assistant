@@ -1,7 +1,6 @@
-
 import React, { useState, useCallback, useEffect, ChangeEvent, RefObject, useMemo, useRef } from 'react';
 import { FileTreeNode, ParsedModificationInstruction, Level1Output, AppStatus, OperationType, UploadedFileData } from './types';
-import { DEFAULT_GEMINI_MODEL_NAME, DEFAULT_USER_API_URL } from './constants';
+import { DEFAULT_GEMINI_MODEL_NAME, DEFAULT_USER_API_URL, ENABLE_DETAILED_LOGGING } from './constants';
 import { SettingsPanel } from './components/SettingsPanel';
 import { FileTreePanel } from './components/FileTreePanel';
 import { EditorPanel } from './components/EditorPanel';
@@ -244,11 +243,14 @@ const App: React.FC = () => {
     setStatus(AppStatus.PROCESSING_L1_OUTPUT);
     setStatusMessage("Parsing Level 1 AI output...");
     
-    console.log("[App.tsx] handleProcessL1Output: Starting L1 output processing.");
-    console.log(`[App.tsx] Current userApiKey (from state): '${userApiKey}' (length: ${userApiKey.length})`);
+    if (ENABLE_DETAILED_LOGGING) {
+      console.log("[App.tsx] Debug: handleProcessL1Output: Starting L1 output processing.");
+      console.log(`[App.tsx] Debug: Current userApiKey (from state): '${userApiKey}' (length: ${userApiKey.length})`);
+    }
     const useClientDirectCall = userApiKey && userApiKey.trim() !== "";
-    console.log(`[App.tsx] Decision for L2 AI calls: ${useClientDirectCall ? 'DIRECT CLIENT-SIDE CALLS (using userApiKey)' : 'BACKEND PROXY CALLS'}`);
-
+    if (ENABLE_DETAILED_LOGGING) {
+      console.log(`[App.tsx] Debug: Decision for L2 AI calls: ${useClientDirectCall ? 'DIRECT CLIENT-SIDE CALLS (using userApiKey)' : 'BACKEND PROXY CALLS'}`);
+    }
 
     if (!useClientDirectCall) {
         console.info("[App.tsx] No user API key provided or key is empty. L2 AI calls will attempt to use backend proxy (/api/gemini). Ensure proxy is configured by deployer.");
@@ -265,7 +267,9 @@ const App: React.FC = () => {
       return;
     }
     
-    console.log("[App.tsx] Level 1 Output Parsed:", parsedOutput);
+    if (ENABLE_DETAILED_LOGGING) {
+      console.log("[App.tsx] Debug: Level 1 Output Parsed:", parsedOutput);
+    }
 
     let commonRootPrefix: string | null = null;
     if (fileTree.length === 1 && fileTree[0].type === 'directory') {
@@ -280,7 +284,7 @@ const App: React.FC = () => {
             }
         }
     }
-    if(commonRootPrefix) console.log(`[App.tsx] Determined common root prefix: ${commonRootPrefix}`);
+    if(commonRootPrefix && ENABLE_DETAILED_LOGGING) console.log(`[App.tsx] Debug: Determined common root prefix: ${commonRootPrefix}`);
 
 
     const activeModifications = parsedOutput.modifications.filter(instruction => {
@@ -304,7 +308,9 @@ const App: React.FC = () => {
     }
 
     setStatusMessage(`Found ${activeModifications.length} actionable modifications. Preparing for Level 2 AI calls.`);
-    console.log(`[App.tsx] ${activeModifications.length} actionable modifications after filtering ignored folders.`);
+    if (ENABLE_DETAILED_LOGGING) {
+      console.log(`[App.tsx] Debug: ${activeModifications.length} actionable modifications after filtering ignored folders.`);
+    }
 
     const instructionsWithContent = activeModifications.map(mod => {
       let actualFilePath = mod.filePath;
@@ -340,7 +346,9 @@ const App: React.FC = () => {
         console.log("[App.tsx] No modifications left after checking for original content existence.");
         return;
     }
-    console.log(`[App.tsx] ${instructionsWithContent.length} modifications with content ready for L2 AI.`);
+    if (ENABLE_DETAILED_LOGGING) {
+      console.log(`[App.tsx] Debug: ${instructionsWithContent.length} modifications with content ready for L2 AI.`);
+    }
 
     setStatus(AppStatus.CALLING_L2_AI);
     let modifiedCount = 0;
@@ -356,16 +364,19 @@ const App: React.FC = () => {
             parsedOutput.threadCount,
             async (instruction) => {
                 try {
-                    console.log(`[App.tsx] Processing L2 for: ${instruction.filePath}, Operation: ${instruction.operation}`);
+                    if (ENABLE_DETAILED_LOGGING) {
+                      console.log(`[App.tsx] Debug: Processing L2 for: ${instruction.filePath}, Operation: ${instruction.operation}`);
+                    }
                     const modifiedFileContentRaw = await callGeminiApi(instruction, geminiModelName, userApiKey, userApiUrl);
                     
                     if (modifiedFileContentRaw === null) {
-                        // parseLevel2Output can handle null if operation is DELETE
                         if (instruction.operation !== OperationType.DELETE) {
                            console.error(`[App.tsx] callGeminiApi returned null for ${instruction.filePath} (operation: ${instruction.operation}). This indicates an error or empty response.`);
                            throw new Error("API call returned null, indicating an error during the call or empty response.");
                         }
-                        console.log(`[App.tsx] callGeminiApi returned null for ${instruction.filePath}, which is expected for DELETE operation if API indicates success with no content.`);
+                        if (ENABLE_DETAILED_LOGGING) {
+                          console.log(`[App.tsx] Debug: callGeminiApi returned null for ${instruction.filePath}, which is expected for DELETE operation if API indicates success with no content.`);
+                        }
                     }
                     
                     const finalModifiedContent = parseLevel2Output(modifiedFileContentRaw as string); 
@@ -391,7 +402,7 @@ const App: React.FC = () => {
                     }
                 } catch (e: any) {
                     console.error(`[App.tsx] Error processing file ${instruction.filePath} during L2 stage: ${e.message}`, e);
-                    setStatusMessage(`Error for ${instruction.filePath}: ${e.message.substring(0,100)}...`); // Update status message for specific file error
+                    setStatusMessage(`Error for ${instruction.filePath}: ${e.message.substring(0,100)}...`); 
                     anyErrorDuringL2Calls = true; 
                 }
             },
@@ -403,14 +414,34 @@ const App: React.FC = () => {
 
         setUploadedFilesData(newUploadedFilesData); 
 
-        if (selectedFilePath && newUploadedFilesData[selectedFilePath]?.content !== uploadedFilesData[selectedFilePath]?.content) {
-          setSelectedFileContent(newUploadedFilesData[selectedFilePath]?.content || null);
-          setSelectedFileMimeType(newUploadedFilesData[selectedFilePath]?.mimeType || null);
-        } else if (selectedFilePath && !newUploadedFilesData.hasOwnProperty(selectedFilePath)) { 
-          setSelectedFilePath(null);
-          setSelectedFileContent(null);
-          setSelectedFileMimeType(null);
+        // Refresh editor panel if the selected file was changed or deleted
+        if (selectedFilePath) {
+            const currentSelectedFileOldData = uploadedFilesData[selectedFilePath]; // Content before L2 changes from closure
+            const newSelectedFileData = newUploadedFilesData[selectedFilePath]; // Content after L2 changes
+    
+            if (newSelectedFileData) { // File still exists
+                if (newSelectedFileData.content !== currentSelectedFileOldData?.content) {
+                    if (ENABLE_DETAILED_LOGGING) {
+                        console.log(`[App.tsx] Debug: Refreshing EditorPanel for ${selectedFilePath} due to content change.`);
+                    }
+                    setSelectedFileContent(newSelectedFileData.content);
+                    setSelectedFileMimeType(newSelectedFileData.mimeType || null);
+                } else if (newSelectedFileData.mimeType !== currentSelectedFileOldData?.mimeType) {
+                    if (ENABLE_DETAILED_LOGGING) {
+                        console.log(`[App.tsx] Debug: Refreshing EditorPanel for ${selectedFilePath} due to mimeType change.`);
+                    }
+                    setSelectedFileMimeType(newSelectedFileData.mimeType || null);
+                }
+            } else if (currentSelectedFileOldData) { // File existed before but now it's deleted
+                if (ENABLE_DETAILED_LOGGING) {
+                    console.log(`[App.tsx] Debug: Clearing EditorPanel as ${selectedFilePath} was deleted.`);
+                }
+                setSelectedFilePath(null);
+                setSelectedFileContent(null);
+                setSelectedFileMimeType(null);
+            }
         }
+
 
         setStatus(anyErrorDuringL2Calls ? AppStatus.ERROR : AppStatus.DONE);
         const finalMessage = anyErrorDuringL2Calls 
@@ -423,7 +454,7 @@ const App: React.FC = () => {
         console.error("[App.tsx] A batch processing error occurred (Promise.all rejected):", batchProcessingError);
         setStatus(AppStatus.ERROR);
         setStatusMessage(`A critical error occurred during batch processing: ${batchProcessingError.message}. Some files may not have been processed.`);
-        setUploadedFilesData(newUploadedFilesData); // Persist partially modified data
+        setUploadedFilesData(newUploadedFilesData); 
     }
 
   }, [geminiModelName, userApiKey, userApiUrl, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);

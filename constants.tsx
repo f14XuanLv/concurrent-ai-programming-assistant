@@ -1,5 +1,6 @@
-
 import React from 'react';
+
+export const ENABLE_DETAILED_LOGGING = false; // Set to true to enable verbose debug logs
 
 export const DEFAULT_GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20"; 
 export const DEFAULT_USER_API_URL = "https://generativelanguage.googleapis.com"; // For user-provided keys

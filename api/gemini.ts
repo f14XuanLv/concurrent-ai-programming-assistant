@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 
 // Using local minimal interfaces instead of importing from 'next'
@@ -34,12 +33,18 @@ interface MinimalNextApiResponse<T> {
 }
 
 const DEFAULT_GOOGLE_API_HOSTNAME = "generativelanguage.googleapis.com";
+// Note: ENABLE_DETAILED_LOGGING from constants.tsx is not directly importable here
+// as this is a Vercel serverless function environment, separate from the frontend bundle.
+// For serverless function debugging, rely on Vercel logs or temporarily uncomment logs.
+const ENABLE_PROXY_DETAILED_LOGGING = process.env.ENABLE_PROXY_DETAILED_LOGGING === 'true' || false; // Control via env var for proxy
 
 export default async function handler(
   req: MinimalNextApiRequest, 
   res: MinimalNextApiResponse<ProxyResponseData> 
 ) {
-  console.log(`[API Proxy /api/gemini] Handler invoked. Method: ${req.method}`);
+  if (ENABLE_PROXY_DETAILED_LOGGING) {
+    console.log(`[API Proxy /api/gemini] Debug: Handler invoked. Method: ${req.method}`);
+  }
 
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
@@ -48,8 +53,9 @@ export default async function handler(
   }
 
   const { prompt, modelName }: ProxyRequestPayload = req.body;
-  console.log("[API Proxy] Received request body:", JSON.stringify(req.body, null, 2));
-
+  if (ENABLE_PROXY_DETAILED_LOGGING) {
+    console.log("[API Proxy] Debug: Received request body:", JSON.stringify(req.body, null, 2));
+  }
 
   if (!prompt || !modelName) {
     console.warn("[API Proxy] Missing required parameters: prompt and/or modelName.");
@@ -59,9 +65,10 @@ export default async function handler(
   const apiKey = process.env.GEMINI_API_KEY;
   const apiUrlFromEnv = process.env.GEMINI_API_URL;
 
-  console.log(`[API Proxy] GEMINI_API_KEY found: ${!!apiKey}, Length > 0: ${!!apiKey && apiKey.length > 0}`);
-  console.log(`[API Proxy] GEMINI_API_URL from env: ${apiUrlFromEnv || "Not set"}`);
-
+  if (ENABLE_PROXY_DETAILED_LOGGING) {
+    console.log(`[API Proxy] Debug: GEMINI_API_KEY found: ${!!apiKey}, Length > 0: ${!!apiKey && apiKey.length > 0}`);
+    console.log(`[API Proxy] Debug: GEMINI_API_URL from env: ${apiUrlFromEnv || "Not set"}`);
+  }
 
   if (!apiKey) {
     console.error('[API Proxy] Critical Error: GEMINI_API_KEY is not set in server environment.');
@@ -75,40 +82,52 @@ export default async function handler(
       const parsedProxyUrl = new URL(apiUrlFromEnv.trim());
       if (parsedProxyUrl.hostname && parsedProxyUrl.hostname.toLowerCase() !== DEFAULT_GOOGLE_API_HOSTNAME.toLowerCase()) {
         sdkConfig.clientOptions = { apiEndpoint: parsedProxyUrl.hostname };
-        console.log(`[API Proxy] Using custom API endpoint from GEMINI_API_URL: ${parsedProxyUrl.hostname}`);
+        if (ENABLE_PROXY_DETAILED_LOGGING) {
+          console.log(`[API Proxy] Debug: Using custom API endpoint from GEMINI_API_URL: ${parsedProxyUrl.hostname}`);
+        }
       } else {
-        console.log("[API Proxy] GEMINI_API_URL is default Google endpoint or similar; using SDK default endpoint behavior.");
+        if (ENABLE_PROXY_DETAILED_LOGGING) {
+          console.log("[API Proxy] Debug: GEMINI_API_URL is default Google endpoint or similar; using SDK default endpoint behavior.");
+        }
       }
     } catch (e) {
       console.warn(`[API Proxy] Invalid GEMINI_API_URL in environment: "${apiUrlFromEnv}". Error: ${(e as Error).message}. Proxy falling back to default Google endpoint behavior.`);
     }
   } else {
-    console.log("[API Proxy] GEMINI_API_URL not set or empty. Using SDK default Google API endpoint.");
+    if (ENABLE_PROXY_DETAILED_LOGGING) {
+      console.log("[API Proxy] Debug: GEMINI_API_URL not set or empty. Using SDK default Google API endpoint.");
+    }
   }
-  console.log("[API Proxy] SDK Config (API key omitted for security):", JSON.stringify({ clientOptions: sdkConfig.clientOptions }, null, 2));
+  if (ENABLE_PROXY_DETAILED_LOGGING) {
+    console.log("[API Proxy] Debug: SDK Config (API key omitted for security):", JSON.stringify({ clientOptions: sdkConfig.clientOptions }, null, 2));
+  }
   
   try {
     const ai = new GoogleGenAI(sdkConfig);
-    console.log(`[API Proxy] Calling Gemini SDK with model: ${modelName}`);
+    if (ENABLE_PROXY_DETAILED_LOGGING) {
+      console.log(`[API Proxy] Debug: Calling Gemini SDK with model: ${modelName}`);
+    }
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: modelName,
       contents: [{ parts: [{ text: prompt }] }],
     });
-    console.log("[API Proxy] Received response from Gemini SDK.");
-
+    if (ENABLE_PROXY_DETAILED_LOGGING) {
+      console.log("[API Proxy] Debug: Received response from Gemini SDK.");
+    }
 
     if (!response || typeof response.text !== 'string') { 
       console.warn('[API Proxy] Gemini API response via proxy was successful but did not contain valid text.', response);
       return res.status(500).json({ error: { message: 'Received an empty or invalid response from AI service via proxy.'} });
     }
     
-    console.log("[API Proxy] Successfully processed request. Returning text response to client.");
+    // A high-level success log for the proxy
+    console.log(`[API Proxy] Successfully processed request for model ${modelName}.`);
     return res.status(200).json({ text: response.text });
 
   } catch (error: any) {
     console.error(`[API Proxy] Error calling Gemini API via proxy (model: ${modelName}):`, error.message, error.cause, error);
     const errorMessage = error.message || 'An unknown error occurred while contacting the AI service via proxy.';
-    const errorStatus = error.status || 500; // Use error's status if available (e.g. from HTTP errors if SDK wraps them)
+    const errorStatus = error.status || 500; 
     return res.status(errorStatus).json({ error: { message: errorMessage, details: error.cause || error.toString() } });
   }
 }
