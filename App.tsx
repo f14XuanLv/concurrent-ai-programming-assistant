@@ -237,6 +237,13 @@ const App: React.FC = () => {
     setStatus(AppStatus.PROCESSING_L1_OUTPUT);
     setStatusMessage("Parsing Level 1 AI output...");
 
+    if (!apiKey.trim() && !DEFAULT_API_KEY) { // Check if API key is missing (considering default might be placeholder)
+        setStatus(AppStatus.ERROR);
+        setStatusMessage("API Key is missing. Please set it in API Settings before executing modifications.");
+        // No alert here as Level1Panel should handle it. This is a safeguard.
+        return;
+    }
+
     const parsedOutput: Level1Output | null = parseLevel1Output(output);
 
     if (!parsedOutput) {
@@ -396,7 +403,10 @@ const App: React.FC = () => {
         <h1 className="text-2xl font-bold text-sky-400">Concurrent AI Programming Assistant</h1>
       </header>
 
-      <div className="flex flex-grow p-4 space-x-4 overflow-hidden" style={{height: 'calc(100vh - 68px - 45px)'}}> {/* Adjust height for header and status bar */}
+      <div 
+        className="flex flex-grow p-4 space-x-4 overflow-hidden" 
+        style={{height: 'calc(100vh - 68px - 48px)'}} // Adjusted 45px to 48px for status bar
+      >
         <div className="w-1/4 flex flex-col space-y-4">
           <SettingsPanel 
             apiKey={apiKey} 
@@ -446,6 +456,7 @@ const App: React.FC = () => {
 
         <div className="w-1/4 flex-shrink-0 overflow-y-auto"> {/* This panel will scroll independently */}
           <Level1Panel
+            apiKey={apiKey} // Pass apiKey
             onPrepareL1Prompt={Object.keys(uploadedFilesData).length > 0 ? prepareL1PromptContent : (() => { alert("Please upload a project first."); return ""; })}
             onProcessL1Output={processLevel1Output}
             currentStatus={status}

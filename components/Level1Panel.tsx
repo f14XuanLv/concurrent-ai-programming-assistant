@@ -5,12 +5,13 @@ import { LEVEL_1_PROMPT_TEMPLATE, LEVEL_1_PROMPT_TEMPLATE_PLACEHOLDERS } from '.
 import { AppStatus } from '../types';
 
 interface Level1PanelProps {
+  apiKey: string; // Added apiKey prop
   onPrepareL1Prompt: () => string;
   onProcessL1Output: (output: string) => void;
   currentStatus: AppStatus;
 }
 
-export const Level1Panel: React.FC<Level1PanelProps> = ({ onPrepareL1Prompt, onProcessL1Output, currentStatus }) => {
+export const Level1Panel: React.FC<Level1PanelProps> = ({ apiKey, onPrepareL1Prompt, onProcessL1Output, currentStatus }) => {
   const [l1Prompt, setL1Prompt] = useState<string>(LEVEL_1_PROMPT_TEMPLATE.replace(LEVEL_1_PROMPT_TEMPLATE_PLACEHOLDERS.USER_REQUIREMENTS, ''));
   const [l1Output, setL1Output] = useState<string>('');
   const [userRequirements, setUserRequirements] = useState<string>('');
@@ -55,6 +56,10 @@ export const Level1Panel: React.FC<Level1PanelProps> = ({ onPrepareL1Prompt, onP
   };
 
   const handleExecute = () => {
+    if (!apiKey.trim()) {
+      alert('API Key is required. Please set it in the API Settings panel.');
+      return;
+    }
     if (l1Output.trim()) {
       onProcessL1Output(l1Output);
     } else {
