@@ -243,23 +243,30 @@ const App: React.FC = () => {
   const handleProcessL1Output = useCallback(async (output: string) => {
     setStatus(AppStatus.PROCESSING_L1_OUTPUT);
     setStatusMessage("Parsing Level 1 AI output...");
+    
+    console.log("[App.tsx] handleProcessL1Output: Starting L1 output processing.");
+    console.log(`[App.tsx] Current userApiKey (from state): '${userApiKey}' (length: ${userApiKey.length})`);
+    const useClientDirectCall = userApiKey && userApiKey.trim() !== "";
+    console.log(`[App.tsx] Decision for L2 AI calls: ${useClientDirectCall ? 'DIRECT CLIENT-SIDE CALLS (using userApiKey)' : 'BACKEND PROXY CALLS'}`);
 
-    if (!userApiKey.trim()) {
-        // Check if the backend proxy is available (e.g., by trying a lightweight health check or assuming it is if not self-hosting with user keys)
-        // For now, we'll assume the proxy is available if no userApiKey is set.
-        // Production deployments should ensure the proxy at /api/gemini is functional.
-        console.info("No user API key provided. L2 AI calls will attempt to use backend proxy.");
+
+    if (!useClientDirectCall) {
+        console.info("[App.tsx] No user API key provided or key is empty. L2 AI calls will attempt to use backend proxy (/api/gemini). Ensure proxy is configured by deployer.");
+    } else {
+        console.info(`[App.tsx] User API key is present. L2 AI calls will be made directly from the client. User API URL: '${userApiUrl}'`);
     }
-
 
     const parsedOutput: Level1Output | null = parseLevel1Output(output);
 
     if (!parsedOutput) {
       setStatus(AppStatus.ERROR);
       setStatusMessage("Failed to parse Level 1 AI output. Check format and console for details.");
+      console.error("[App.tsx] parseLevel1Output returned null. Aborting L2 processing.");
       return;
     }
     
+    console.log("[App.tsx] Level 1 Output Parsed:", parsedOutput);
+
     let commonRootPrefix: string | null = null;
     if (fileTree.length === 1 && fileTree[0].type === 'directory') {
         commonRootPrefix = fileTree[0].name;
@@ -273,6 +280,7 @@ const App: React.FC = () => {
             }
         }
     }
+    if(commonRootPrefix) console.log(`[App.tsx] Determined common root prefix: ${commonRootPrefix}`);
 
 
     const activeModifications = parsedOutput.modifications.filter(instruction => {
@@ -280,7 +288,7 @@ const App: React.FC = () => {
       const isPathIgnored = pathParts.slice(0, -1).some(part => ignoredFoldersArray.includes(part)) ||
                             (commonRootPrefix && pathParts[0] === commonRootPrefix && pathParts.slice(1, -1).some(part => ignoredFoldersArray.includes(part)));
       if (isPathIgnored) {
-          console.warn(`Skipping modification for file in ignored folder: ${instruction.filePath}`);
+          console.warn(`[App.tsx] Skipping modification for file in ignored folder: ${instruction.filePath}`);
           setStatusMessage(`Skipping op for ignored path: ${instruction.filePath}`);
           return false;
       }
@@ -291,10 +299,12 @@ const App: React.FC = () => {
     if (activeModifications.length === 0) {
         setStatus(AppStatus.DONE);
         setStatusMessage("Level 1 AI output parsed. No actionable file modifications specified (or all were in ignored folders).");
+        console.log("[App.tsx] No actionable modifications after filtering ignored folders.");
         return;
     }
 
     setStatusMessage(`Found ${activeModifications.length} actionable modifications. Preparing for Level 2 AI calls.`);
+    console.log(`[App.tsx] ${activeModifications.length} actionable modifications after filtering ignored folders.`);
 
     const instructionsWithContent = activeModifications.map(mod => {
       let actualFilePath = mod.filePath;
@@ -304,7 +314,7 @@ const App: React.FC = () => {
           const potentialFullPath = `${commonRootPrefix}/${mod.filePath}`;
           const potentialFileData = uploadedFilesData[potentialFullPath];
           if (potentialFileData !== undefined) {
-              console.warn(`Path auto-correction: L1 output used '${mod.filePath}', matched to '${potentialFullPath}' by prepending root '${commonRootPrefix}'.`);
+              console.warn(`[App.tsx] Path auto-correction: L1 output used '${mod.filePath}', matched to '${potentialFullPath}' by prepending root '${commonRootPrefix}'.`);
               setStatusMessage(`Info: Path for ${mod.filePath} auto-corrected to ${potentialFullPath}.`);
               fileData = potentialFileData;
               actualFilePath = potentialFullPath; 
@@ -317,7 +327,7 @@ const App: React.FC = () => {
       };
     }).filter(mod => { 
         if (mod.operation !== OperationType.CREATE && mod.originalContent === undefined) {
-            console.warn(`Skipping ${mod.operation} for non-existent or uncorrected file path: ${mod.filePath}`);
+            console.warn(`[App.tsx] Skipping ${mod.operation} for non-existent or uncorrected file path: ${mod.filePath}`);
             setStatusMessage(`Warning: File ${mod.filePath} not found for ${mod.operation}. Skipping.`);
             return false;
         }
@@ -327,9 +337,10 @@ const App: React.FC = () => {
     if (instructionsWithContent.length === 0) {
         setStatus(AppStatus.DONE);
         setStatusMessage("All specified modifications were for non-existent files (even after path correction attempts). No operations to perform.");
+        console.log("[App.tsx] No modifications left after checking for original content existence.");
         return;
     }
-
+    console.log(`[App.tsx] ${instructionsWithContent.length} modifications with content ready for L2 AI.`);
 
     setStatus(AppStatus.CALLING_L2_AI);
     let modifiedCount = 0;
@@ -345,19 +356,22 @@ const App: React.FC = () => {
             parsedOutput.threadCount,
             async (instruction) => {
                 try {
-                    // Pass userApiKey and userApiUrl to callGeminiApi
+                    console.log(`[App.tsx] Processing L2 for: ${instruction.filePath}, Operation: ${instruction.operation}`);
                     const modifiedFileContentRaw = await callGeminiApi(instruction, geminiModelName, userApiKey, userApiUrl);
                     
                     if (modifiedFileContentRaw === null) {
+                        // parseLevel2Output can handle null if operation is DELETE
                         if (instruction.operation !== OperationType.DELETE) {
+                           console.error(`[App.tsx] callGeminiApi returned null for ${instruction.filePath} (operation: ${instruction.operation}). This indicates an error or empty response.`);
                            throw new Error("API call returned null, indicating an error during the call or empty response.");
                         }
+                        console.log(`[App.tsx] callGeminiApi returned null for ${instruction.filePath}, which is expected for DELETE operation if API indicates success with no content.`);
                     }
                     
                     const finalModifiedContent = parseLevel2Output(modifiedFileContentRaw as string); 
 
                     if (finalModifiedContent === null && instruction.operation !== OperationType.DELETE) {
-                        console.warn(`Failed to parse Level 2 output for ${instruction.filePath} or content was null. File not modified.`);
+                        console.warn(`[App.tsx] Failed to parse Level 2 output for ${instruction.filePath} or content was null. File not modified.`);
                         setStatusMessage(`Warning: Could not parse L2 output for ${instruction.filePath}.`);
                         anyErrorDuringL2Calls = true; 
                         return; 
@@ -367,17 +381,17 @@ const App: React.FC = () => {
 
                     if (instruction.operation === OperationType.DELETE || (finalModifiedContent === '' && instruction.operation !== OperationType.CREATE && finalModifiedContent !== null) ) {
                         delete newUploadedFilesData[instruction.filePath];
-                        console.log(`File deleted: ${instruction.filePath}`);
+                        console.log(`[App.tsx] File deleted: ${instruction.filePath}`);
                     } else if (finalModifiedContent !== null) { 
                         newUploadedFilesData[instruction.filePath] = {
                            content: finalModifiedContent,
                            mimeType: instruction.operation === OperationType.CREATE ? 'text/plain' : originalMimeType
                         };
-                        console.log(`File ${instruction.operation === OperationType.CREATE ? 'created' : 'updated'}: ${instruction.filePath}`);
+                        console.log(`[App.tsx] File ${instruction.operation === OperationType.CREATE ? 'created' : 'updated'}: ${instruction.filePath}`);
                     }
                 } catch (e: any) {
-                    console.error(`Error processing file ${instruction.filePath}: ${e.message}`);
-                    setStatusMessage(`Error for ${instruction.filePath}: ${e.message.substring(0,100)}...`);
+                    console.error(`[App.tsx] Error processing file ${instruction.filePath} during L2 stage: ${e.message}`, e);
+                    setStatusMessage(`Error for ${instruction.filePath}: ${e.message.substring(0,100)}...`); // Update status message for specific file error
                     anyErrorDuringL2Calls = true; 
                 }
             },
@@ -399,13 +413,17 @@ const App: React.FC = () => {
         }
 
         setStatus(anyErrorDuringL2Calls ? AppStatus.ERROR : AppStatus.DONE);
-        setStatusMessage(anyErrorDuringL2Calls ? `Completed with some errors. ${modifiedCount}/${totalCalls} processed. Check console.` : `All ${modifiedCount} modifications processed successfully.`);
+        const finalMessage = anyErrorDuringL2Calls 
+            ? `Completed with some errors. ${modifiedCount}/${totalCalls} processed. Check console for details.` 
+            : `All ${modifiedCount} modifications processed successfully.`;
+        setStatusMessage(finalMessage);
+        console.log(`[App.tsx] L2 processing finished. Status: ${anyErrorDuringL2Calls ? 'ERROR' : 'DONE'}. Message: ${finalMessage}`);
 
     } catch (batchProcessingError: any) { 
-        console.error("A batch processing error occurred:", batchProcessingError);
+        console.error("[App.tsx] A batch processing error occurred (Promise.all rejected):", batchProcessingError);
         setStatus(AppStatus.ERROR);
         setStatusMessage(`A critical error occurred during batch processing: ${batchProcessingError.message}. Some files may not have been processed.`);
-        setUploadedFilesData(newUploadedFilesData);
+        setUploadedFilesData(newUploadedFilesData); // Persist partially modified data
     }
 
   }, [geminiModelName, userApiKey, userApiUrl, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);

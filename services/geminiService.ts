@@ -33,10 +33,10 @@ export const callGeminiApi = async (
   userApiUrl?: string  
 ): Promise<string | null> => {
   const promptText = constructLevel2Prompt(instruction);
+  console.log(`[GeminiService] callGeminiApi for ${instruction.filePath}, model: ${modelName}. User API Key Provided: ${!!userApiKey}, User API URL: ${userApiUrl || 'Not provided'}`);
   
   if (userApiKey && userApiKey.trim() !== "") {
-    // Mode 1: User provided an API key, make direct client-side call
-    console.log(`Using user-provided API key for direct call to ${instruction.filePath}`);
+    console.log(`[GeminiService] Operating in DIRECT CLIENT-SIDE CALL Mode for ${instruction.filePath}.`);
     try {
       const sdkConfig: { apiKey: string; clientOptions?: { apiEndpoint: string } } = { apiKey: userApiKey };
 
@@ -47,71 +47,92 @@ export const callGeminiApi = async (
 
           if (parsedUserUrl.hostname !== defaultGoogleHostname) {
             sdkConfig.clientOptions = { apiEndpoint: parsedUserUrl.hostname };
-            console.log(`Using custom API endpoint for user's key: ${parsedUserUrl.hostname}`);
+            console.log(`[GeminiService] Using custom API endpoint for user's key: ${parsedUserUrl.hostname}. SDK Config:`, JSON.stringify(sdkConfig));
           } else {
-             console.log("User API URL is the default Google endpoint or a variation; no custom clientOptions.apiEndpoint needed for direct SDK call.");
+             console.log("[GeminiService] User API URL is the default Google endpoint or a variation; no custom clientOptions.apiEndpoint needed for direct SDK call.");
           }
         } catch (e) {
-          console.warn(`Invalid custom API URL provided: "${userApiUrl}". Error: ${(e as Error).message}. Falling back to default Google endpoint behavior for user's key.`);
-          // Potentially throw error or alert if URL is malformed and critical
+          console.warn(`[GeminiService] Invalid custom API URL provided: "${userApiUrl}". Error: ${(e as Error).message}. Falling back to default Google endpoint behavior for user's key.`);
            throw new Error(`[${instruction.filePath} - ${modelName}] Invalid API URL: ${userApiUrl}. Please correct it or use the default.`);
         }
       } else {
-         console.log("Using default Google endpoint for user's key (no custom API URL or it matches default).");
+         console.log("[GeminiService] Using default Google endpoint for user's key (no custom API URL or it matches default). SDK Config:", JSON.stringify(sdkConfig));
       }
       
       const ai = new GoogleGenAI(sdkConfig);
+      console.log(`[GeminiService] Making direct call to Gemini for ${instruction.filePath} with model ${modelName}.`);
       const response: GenerateContentResponse = await ai.models.generateContent({
         model: modelName,
         contents: [{ parts: [{ text: promptText }] }],
       });
+      console.log(`[GeminiService] Direct call response for ${instruction.filePath}:`, response);
 
-      if (!response || typeof response.text !== 'string') { // Check if text is a string
-        console.warn(`Direct Gemini API response for ${instruction.filePath} was successful but did not contain valid text.`, response);
+
+      if (!response || typeof response.text !== 'string') { 
+        console.warn(`[GeminiService] Direct Gemini API response for ${instruction.filePath} was successful but did not contain valid text.`, response);
         throw new Error(`[${instruction.filePath} - ${modelName}] Received an invalid or empty text response from direct API call.`);
       }
       return response.text;
 
     } catch (error: any) {
-      console.error(`Error making direct Gemini API call for ${instruction.filePath} (model ${modelName}):`, error);
+      console.error(`[GeminiService] Error making direct Gemini API call for ${instruction.filePath} (model ${modelName}):`, error.message, error.cause, error);
       const errorMessage = error.message || "An unknown error occurred during direct API call.";
       throw new Error(`[${instruction.filePath} - ${modelName}] ${errorMessage}`);
     }
 
   } else {
-    // Mode 2: No user API key, use the backend proxy
-    console.log(`Using backend proxy for ${instruction.filePath}`);
+    console.log(`[GeminiService] Operating in BACKEND PROXY CALL Mode for ${instruction.filePath}.`);
+    const proxyRequestBody = {
+        prompt: promptText,
+        modelName: modelName,
+    };
+    console.log(`[GeminiService] Sending request to backend proxy /api/gemini for ${instruction.filePath}. Body:`, JSON.stringify(proxyRequestBody, null, 2));
+
     try {
         const response = await fetch('/api/gemini', { 
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-            prompt: promptText,
-            modelName: modelName,
-        }),
+        body: JSON.stringify(proxyRequestBody),
         });
 
-        const responseData: GeminiApiResponse = await response.json();
-
         if (!response.ok) {
-        const errorMsg = responseData.error?.message || `Error from proxy: ${response.status} ${response.statusText}`;
-        console.error(`Error calling Gemini API via proxy for ${instruction.filePath} (model ${modelName}): ${errorMsg}`, responseData.error?.details);
-        throw new Error(`[${instruction.filePath} - ${modelName}] ${errorMsg}`);
+          const rawTextError = await response.text(); // Get raw response text FIRST
+          console.error(`[GeminiService] Proxy call for ${instruction.filePath} (model ${modelName}) FAILED. Status: ${response.status} ${response.statusText}. Raw Response from Proxy: ${rawTextError}`);
+          
+          let errorMsg = `Error from proxy: ${response.status} ${response.statusText}`;
+          let errorDetails = null;
+          try {
+            const responseData: GeminiApiResponse = JSON.parse(rawTextError); // Try to parse the raw text
+            errorMsg = responseData.error?.message || errorMsg; // Prefer parsed message
+            errorDetails = responseData.error?.details;
+          } catch (e) {
+            console.warn("[GeminiService] Failed to parse proxy error response as JSON. Using raw text as error message.", e);
+            errorMsg = rawTextError || errorMsg; // Fallback to raw text if JSON parsing fails
+          }
+          console.error(`[GeminiService] Final error message from proxy for ${instruction.filePath}: ${errorMsg}`, errorDetails);
+          throw new Error(`[${instruction.filePath} - ${modelName}] ${errorMsg}`);
         }
+        
+        const responseData: GeminiApiResponse = await response.json();
+        console.log(`[GeminiService] Proxy response for ${instruction.filePath} (model ${modelName}):`, responseData);
         
         if (responseData && typeof responseData.text === 'string') {
             return responseData.text;
         } else {
-            console.warn(`Proxy response for ${instruction.filePath} (model ${modelName}) was successful but did not contain text.`, responseData);
+            console.warn(`[GeminiService] Proxy response for ${instruction.filePath} (model ${modelName}) was successful but did not contain text.`, responseData);
             throw new Error(`[${instruction.filePath} - ${modelName}] Received an invalid or empty text response from the proxy.`);
         }
 
     } catch (error: any) {
-        console.error(`Network or parsing error when calling proxy for ${instruction.filePath} (model ${modelName}):`, error);
-        const errorMessage = error.message || "An unknown network or parsing error occurred.";
-        throw new Error(`[${instruction.filePath} - ${modelName}] ${errorMessage}`);
+        // This catch block handles network errors for the fetch call itself, or errors from the 'throw new Error' above.
+        console.error(`[GeminiService] Network or parsing error when calling proxy for ${instruction.filePath} (model ${modelName}):`, error.message, error);
+        // Ensure the error message is helpful, it might already be prefixed.
+        const errorMessage = error.message.startsWith(`[${instruction.filePath} - ${modelName}]`) 
+          ? error.message 
+          : `[${instruction.filePath} - ${modelName}] ${error.message || "An unknown network or parsing error occurred."}`;
+        throw new Error(errorMessage);
     }
   }
 };
