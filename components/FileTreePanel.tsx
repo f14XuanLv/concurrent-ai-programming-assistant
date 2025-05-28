@@ -5,7 +5,7 @@ import { FolderIconSVG, FileIconSVG } from '../constants'; // Using .tsx for con
 
 interface FileTreeNodeItemProps {
   node: FileTreeNode;
-  onFileSelect: (path: string, content?: string, mimeType?: string) => void;
+  onFileSelect: (path: string) => void; // Updated signature
   selectedFilePath: string | null;
   level?: number;
   ignoredFolders: string[];
@@ -19,11 +19,12 @@ const FileTreeNodeItem: React.FC<FileTreeNodeItemProps> = React.memo(({ node, on
   const isSelected = selectedFilePath === node.path;
 
   const handleSelect = () => {
-    if (node.type === 'file') {
-      onFileSelect(node.path, node.content, node.mimeType);
-    } else {
+    // Always call onFileSelect with the node's path,
+    // whether it's a file or a directory.
+    // The App component's useEffect will handle fetching content.
+    onFileSelect(node.path);
+    if (node.type === 'directory') {
       setIsOpen(!isOpen);
-      onFileSelect(node.path, undefined, undefined); 
     }
   };
 
@@ -75,7 +76,7 @@ const FileTreeNodeItem: React.FC<FileTreeNodeItemProps> = React.memo(({ node, on
 
 interface FileTreePanelProps {
   fileTree: FileTreeNode[];
-  onFileSelect: (path: string, content?: string, mimeType?: string) => void;
+  onFileSelect: (path: string) => void; // Updated signature
   selectedFilePath: string | null;
   ignoredFolders: string[];
 }

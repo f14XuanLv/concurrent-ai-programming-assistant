@@ -117,11 +117,55 @@ const App: React.FC = () => {
       setFileTree([]);
       setStatus(AppStatus.IDLE);
       setSelectedFilePath(null);
-      setSelectedFileContent(null);
-      setSelectedFileMimeType(null);
+      // selectedFileContent & mimeType will be handled by the dedicated useEffect
       setStatusMessage('Upload a project folder to begin.');
     }
   }, [uploadedFilesData]);
+
+  // useEffect to synchronize EditorPanel content with selectedFilePath and uploadedFilesData
+  useEffect(() => {
+    if (ENABLE_DETAILED_LOGGING) {
+      console.log(`[App.tsx useEffect EditorSync] Triggered. selectedFilePath: ${selectedFilePath}`);
+    }
+    if (!selectedFilePath) {
+      if (selectedFileContent !== null || selectedFileMimeType !== null) {
+          if (ENABLE_DETAILED_LOGGING) {
+              console.log("[App.tsx useEffect EditorSync] No file selected, clearing editor content.");
+          }
+          setSelectedFileContent(null);
+          setSelectedFileMimeType(null);
+      }
+      return;
+    }
+
+    const fileData = uploadedFilesData[selectedFilePath];
+
+    if (fileData) { // It's a file and exists in our data
+      if (selectedFileContent !== fileData.content) {
+        if (ENABLE_DETAILED_LOGGING) {
+          console.log(`[App.tsx useEffect EditorSync] Updating editor content for ${selectedFilePath}.`);
+        }
+        setSelectedFileContent(fileData.content);
+      }
+      if (selectedFileMimeType !== fileData.mimeType) {
+        if (ENABLE_DETAILED_LOGGING) {
+          console.log(`[App.tsx useEffect EditorSync] Updating editor mimeType for ${selectedFilePath}.`);
+        }
+        setSelectedFileMimeType(fileData.mimeType);
+      }
+    } else {
+      // Path might be a directory, or a file that was deleted, or an invalid path
+      // If it's a directory, we expect no content. If it was a file and now fileData is undefined, it was deleted.
+      if (selectedFileContent !== null || selectedFileMimeType !== null) {
+          if (ENABLE_DETAILED_LOGGING) {
+              console.log(`[App.tsx useEffect EditorSync] Selected path ${selectedFilePath} is a directory or file not found in data. Clearing editor content.`);
+          }
+          setSelectedFileContent(null); 
+          setSelectedFileMimeType(null);
+      }
+    }
+  }, [selectedFilePath, uploadedFilesData]); // Removed selectedFileContent & selectedFileMimeType from deps
+
 
   const handleFolderUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -160,7 +204,7 @@ const App: React.FC = () => {
             newFilesData[result.path] = { content: result.content, mimeType: result.mimeType };
         }
       });
-      setUploadedFilesData(newFilesData); // This will trigger the useEffect for tree building
+      setUploadedFilesData(newFilesData); // This will trigger the useEffect for tree building & editor sync
     } catch (error) {
       console.error("Error reading files:", error);
       setStatus(AppStatus.ERROR);
@@ -172,35 +216,14 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleFileSelect = useCallback((path: string, content?: string, mimeType?: string) => {
+  const handleFileSelect = useCallback((path: string) => {
+    if (ENABLE_DETAILED_LOGGING) {
+        console.log(`[App.tsx handleFileSelect] Setting selectedFilePath to: ${path}`);
+    }
     setSelectedFilePath(path);
-    const fileData = uploadedFilesData[path];
-    if (content !== undefined) { // Content explicitly passed (e.g. from FileTreeNodeItem if it stored it)
-      setSelectedFileContent(content);
-      setSelectedFileMimeType(mimeType || fileData?.mimeType || 'application/octet-stream');
-    } else if (fileData) { // Fallback to lookup in uploadedFilesData
-      setSelectedFileContent(fileData.content);
-      setSelectedFileMimeType(fileData.mimeType);
-    } else { // Path selected might be a directory or file not found
-      setSelectedFileContent(nodeIsDirectory(path, fileTree) ? null : 'Content not available.');
-      setSelectedFileMimeType(null);
-    }
-  }, [uploadedFilesData, fileTree]);
+    // The useEffect listening to [selectedFilePath, uploadedFilesData] will handle setting content and mimeType.
+  }, []);
 
-  const nodeIsDirectory = (path: string, tree: FileTreeNode[]): boolean => {
-    function findNode(nodes: FileTreeNode[], targetPath: string): FileTreeNode | null {
-        for (const node of nodes) {
-            if (node.path === targetPath) return node;
-            if (node.children) {
-                const foundInChild = findNode(node.children, targetPath);
-                if (foundInChild) return foundInChild;
-            }
-        }
-        return null;
-    }
-    const node = findNode(tree, path);
-    return node?.type === 'directory';
-  };
 
   const printNode = (node: FileTreeNode, indent: string, ignoredPaths: string[]): string => {
     if (node.type === 'directory' && ignoredPaths.includes(node.name)) {
@@ -314,11 +337,13 @@ const App: React.FC = () => {
 
     const instructionsWithContent = activeModifications.map(mod => {
       let actualFilePath = mod.filePath;
-      let fileData = uploadedFilesData[actualFilePath];
+      // Use a temporary variable to hold the potentially stale uploadedFilesData from this closure
+      const currentUploadedFilesData = uploadedFilesData;
+      let fileData = currentUploadedFilesData[actualFilePath];
 
       if (fileData === undefined && commonRootPrefix && !mod.filePath.startsWith(commonRootPrefix + '/')) {
           const potentialFullPath = `${commonRootPrefix}/${mod.filePath}`;
-          const potentialFileData = uploadedFilesData[potentialFullPath];
+          const potentialFileData = currentUploadedFilesData[potentialFullPath];
           if (potentialFileData !== undefined) {
               console.warn(`[App.tsx] Path auto-correction: L1 output used '${mod.filePath}', matched to '${potentialFullPath}' by prepending root '${commonRootPrefix}'.`);
               setStatusMessage(`Info: Path for ${mod.filePath} auto-corrected to ${potentialFullPath}.`);
@@ -355,7 +380,7 @@ const App: React.FC = () => {
     const totalCalls = instructionsWithContent.length;
     setStatusMessage(`Calling Level 2 AI for ${totalCalls} files (0/${totalCalls} completed)...`);
 
-    const newUploadedFilesData = { ...uploadedFilesData };
+    const newUploadedFilesData = { ...uploadedFilesData }; // Create a mutable copy based on potentially stale data
     let anyErrorDuringL2Calls = false;
 
     try {
@@ -411,37 +436,12 @@ const App: React.FC = () => {
                 setStatusMessage(`Calling Level 2 AI for ${total} files (${completed}/${total} completed)...`);
             }
         );
-
+        // At this point, newUploadedFilesData contains all modifications.
+        // Update the main state. This will trigger the useEffect for editor refresh.
         setUploadedFilesData(newUploadedFilesData); 
 
-        // Refresh editor panel if the selected file was changed or deleted
-        if (selectedFilePath) {
-            const currentSelectedFileOldData = uploadedFilesData[selectedFilePath]; // Content before L2 changes from closure
-            const newSelectedFileData = newUploadedFilesData[selectedFilePath]; // Content after L2 changes
-    
-            if (newSelectedFileData) { // File still exists
-                if (newSelectedFileData.content !== currentSelectedFileOldData?.content) {
-                    if (ENABLE_DETAILED_LOGGING) {
-                        console.log(`[App.tsx] Debug: Refreshing EditorPanel for ${selectedFilePath} due to content change.`);
-                    }
-                    setSelectedFileContent(newSelectedFileData.content);
-                    setSelectedFileMimeType(newSelectedFileData.mimeType || null);
-                } else if (newSelectedFileData.mimeType !== currentSelectedFileOldData?.mimeType) {
-                    if (ENABLE_DETAILED_LOGGING) {
-                        console.log(`[App.tsx] Debug: Refreshing EditorPanel for ${selectedFilePath} due to mimeType change.`);
-                    }
-                    setSelectedFileMimeType(newSelectedFileData.mimeType || null);
-                }
-            } else if (currentSelectedFileOldData) { // File existed before but now it's deleted
-                if (ENABLE_DETAILED_LOGGING) {
-                    console.log(`[App.tsx] Debug: Clearing EditorPanel as ${selectedFilePath} was deleted.`);
-                }
-                setSelectedFilePath(null);
-                setSelectedFileContent(null);
-                setSelectedFileMimeType(null);
-            }
-        }
-
+        // The useEffect [selectedFilePath, uploadedFilesData] will now handle editor panel refresh.
+        // The old manual refresh block here is removed.
 
         setStatus(anyErrorDuringL2Calls ? AppStatus.ERROR : AppStatus.DONE);
         const finalMessage = anyErrorDuringL2Calls 
@@ -454,10 +454,11 @@ const App: React.FC = () => {
         console.error("[App.tsx] A batch processing error occurred (Promise.all rejected):", batchProcessingError);
         setStatus(AppStatus.ERROR);
         setStatusMessage(`A critical error occurred during batch processing: ${batchProcessingError.message}. Some files may not have been processed.`);
+        // Update with potentially partially modified data so user doesn't lose all progress
         setUploadedFilesData(newUploadedFilesData); 
     }
 
-  }, [geminiModelName, userApiKey, userApiUrl, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);
+  }, [geminiModelName, userApiKey, userApiUrl, uploadedFilesData, ignoredFoldersArray, fileTree]); // Removed selectedFilePath as it's not directly used for calculations leading to L2 calls
 
   const handleDividerMouseDown = (divider: 'left-middle' | 'middle-right', event: React.MouseEvent) => {
     event.preventDefault();
