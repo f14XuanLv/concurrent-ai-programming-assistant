@@ -11,8 +11,17 @@ import { Button } from './components/Button';
 import { parseLevel1Output, parseLevel2Output } from './services/fileParserService';
 import { callGeminiApi } from './services/geminiService';
 
-// Attempt to read deployer-configured environment variables
-// These might be undefined if not set or not exposed to the browser environment
+// Attempt to read deployer-configured environment variables.
+// IMPORTANT for Vercel (and similar static hosting) deployments:
+// Environment variables set in the Vercel dashboard (e.g., API_KEY, API_URL)
+// are NOT automatically injected into client-side JavaScript's `process.env`
+// for simple static file deployments (i.e., when Vercel isn't running a build
+// command like `vite build` or `next build` that specifically handles this).
+// Therefore, `process.env.API_KEY` will likely be undefined client-side in such setups.
+// The application relies on user input as a fallback.
+// For these variables to be available client-side from Vercel,
+// you would typically need to use a build tool (like Vite, with VITE_ prefixed vars)
+// and configure Vercel to run your build command.
 const DEPLOYER_API_KEY = typeof process !== 'undefined' && process.env && process.env.API_KEY ? process.env.API_KEY : "";
 const DEPLOYER_API_URL = typeof process !== 'undefined' && process.env && process.env.API_URL ? process.env.API_URL : "";
 
@@ -113,15 +122,23 @@ const App: React.FC = () => {
 
   // Function to determine the effective API key and URL
   const getEffectiveConfig = useCallback(() => {
+    // User-entered API key takes highest priority.
+    // If empty, `DEPLOYER_API_KEY` (from `process.env.API_KEY`) is used.
+    // As noted above, `DEPLOYER_API_KEY` will likely be empty in basic static Vercel deployments.
     const effectiveApiKey = userApiKey.trim() || DEPLOYER_API_KEY;
     
     let effectiveApiUrl = DEFAULT_API_URL; // Start with the hardcoded default
-    if (DEPLOYER_API_URL) { // Deployer URL, if set, takes highest precedence for URL
+
+    // For API URL:
+    // 1. DEPLOYER_API_URL (from `process.env.API_URL`) takes highest precedence.
+    //    (Again, likely empty in basic static Vercel deployments).
+    // 2. If DEPLOYER_API_URL is empty, user-entered URL is used.
+    // 3. If both are empty, hardcoded DEFAULT_API_URL is used.
+    if (DEPLOYER_API_URL) { 
         effectiveApiUrl = DEPLOYER_API_URL;
-    } else if (userApiUrl.trim()) { // Else, if user has input a URL, use that
+    } else if (userApiUrl.trim()) { 
         effectiveApiUrl = userApiUrl.trim();
     }
-    // If neither deployer nor user URL is set, it remains DEFAULT_API_URL
 
     return { effectiveApiKey, effectiveApiUrl };
   }, [userApiKey, userApiUrl]);
@@ -266,7 +283,7 @@ const App: React.FC = () => {
 
     if (!effectiveApiKey) { 
         setStatus(AppStatus.ERROR);
-        setStatusMessage("API Key is missing. Please set it in API Settings or ensure the application deployer has configured one.");
+        setStatusMessage("API Key is missing. Please set it in API Settings. If a deployer key was intended, it may not be accessible in this static deployment environment.");
         return;
     }
 
@@ -538,7 +555,7 @@ const App: React.FC = () => {
               setGeminiModelName={setGeminiModelName}
               ignoredFolders={ignoredFoldersInput}
               setIgnoredFolders={setIgnoredFoldersInput}
-              showApiUrlInput={!DEPLOYER_API_URL} // Hide if deployer URL is set
+              showApiUrlInput={!DEPLOYER_API_URL} // Hide if deployer URL is set (and accessible)
             />
           </div>
            <div className="flex-shrink-0">
