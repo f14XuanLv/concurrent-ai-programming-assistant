@@ -1,0 +1,6 @@
+{
+  "name": "Copy of Concurrent AI Programming Assistant",
+  "description": "A web IDE to manage and apply AI-suggested code modifications concurrently using Gemini API. It facilitates a two-step AI process: global analysis (manual) and per-file modification (automated by the app).",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
