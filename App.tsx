@@ -12,18 +12,30 @@ import { parseLevel1Output, parseLevel2Output } from './services/fileParserServi
 import { callGeminiApi } from './services/geminiService';
 
 // Attempt to read deployer-configured environment variables.
-// IMPORTANT for Vercel (and similar static hosting) deployments:
-// Environment variables set in the Vercel dashboard (e.g., API_KEY, API_URL)
-// are NOT automatically injected into client-side JavaScript's `process.env`
-// for simple static file deployments (i.e., when Vercel isn't running a build
-// command like `vite build` or `next build` that specifically handles this).
-// Therefore, `process.env.API_KEY` will likely be undefined client-side in such setups.
-// The application relies on user input as a fallback.
-// For these variables to be available client-side from Vercel,
-// you would typically need to use a build tool (like Vite, with VITE_ prefixed vars)
-// and configure Vercel to run your build command.
-const DEPLOYER_API_KEY = typeof process !== 'undefined' && process.env && process.env.API_KEY ? process.env.API_KEY : "";
-const DEPLOYER_API_URL = typeof process !== 'undefined' && process.env && process.env.API_URL ? process.env.API_URL : "";
+// For Vercel deployments using Vite (as indicated by `vite build` in logs):
+// 1. Environment variables MUST be prefixed with `VITE_` in Vercel UI (e.g., VITE_API_KEY).
+// 2. Vite exposes these client-side via `import.meta.env.VITE_YOUR_VARIABLE`.
+const VITE_DEPLOYER_API_KEY = (
+    typeof import.meta !== 'undefined' && // Check if import.meta exists
+    (import.meta as any).env && // Check if .env exists on it (as any)
+    (import.meta as any).env.VITE_API_KEY // Check if .VITE_API_KEY exists on .env
+) ? String(((import.meta as any).env).VITE_API_KEY) : "";
+
+const VITE_DEPLOYER_API_URL = (
+    typeof import.meta !== 'undefined' &&
+    (import.meta as any).env &&
+    (import.meta as any).env.VITE_API_URL
+) ? String(((import.meta as any).env).VITE_API_URL) : "";
+
+
+// Fallback for other environments or if VITE_ vars are not set (less common for client-side Vercel/Vite).
+// `process.env.API_KEY` is generally not populated client-side by Vite builds from Vercel dashboard variables.
+const LEGACY_DEPLOYER_API_KEY = (typeof process !== 'undefined' && process.env && process.env.API_KEY) ? process.env.API_KEY : "";
+const LEGACY_DEPLOYER_API_URL = (typeof process !== 'undefined' && process.env && process.env.API_URL) ? process.env.API_URL : "";
+
+// Prioritize Vite's environment variables, then legacy, then empty.
+const DEPLOYER_API_KEY = VITE_DEPLOYER_API_KEY || LEGACY_DEPLOYER_API_KEY;
+const DEPLOYER_API_URL = VITE_DEPLOYER_API_URL || LEGACY_DEPLOYER_API_URL;
 
 
 // Helper to build file tree
@@ -84,7 +96,7 @@ async function processInBatches<T, R,>(
       if (onProgress) onProgress(completedCount, items.length);
     } catch (error) {
         console.error("Error processing batch: ", error);
-        throw error; 
+        throw error;
     }
   }
   return allResults;
@@ -96,7 +108,7 @@ const App: React.FC = () => {
   // State for user-provided API configurations
   const [userApiKey, setUserApiKey] = useState<string>(DEFAULT_API_KEY); // Defaults to ""
   const [userApiUrl, setUserApiUrl] = useState<string>(DEFAULT_API_URL); // Defaults to Google's endpoint
-  
+
   const [geminiModelName, setGeminiModelName] = useState<string>(DEFAULT_GEMINI_MODEL_NAME);
   const [ignoredFoldersInput, setIgnoredFoldersInput] = useState<string>('.git,node_modules,dist,build');
 
@@ -123,20 +135,18 @@ const App: React.FC = () => {
   // Function to determine the effective API key and URL
   const getEffectiveConfig = useCallback(() => {
     // User-entered API key takes highest priority.
-    // If empty, `DEPLOYER_API_KEY` (from `process.env.API_KEY`) is used.
-    // As noted above, `DEPLOYER_API_KEY` will likely be empty in basic static Vercel deployments.
+    // Then, DEPLOYER_API_KEY (which now correctly checks VITE_API_KEY first).
     const effectiveApiKey = userApiKey.trim() || DEPLOYER_API_KEY;
-    
+
     let effectiveApiUrl = DEFAULT_API_URL; // Start with the hardcoded default
 
     // For API URL:
-    // 1. DEPLOYER_API_URL (from `process.env.API_URL`) takes highest precedence.
-    //    (Again, likely empty in basic static Vercel deployments).
+    // 1. DEPLOYER_API_URL (which now checks VITE_API_URL first) takes highest precedence.
     // 2. If DEPLOYER_API_URL is empty, user-entered URL is used.
     // 3. If both are empty, hardcoded DEFAULT_API_URL is used.
-    if (DEPLOYER_API_URL) { 
+    if (DEPLOYER_API_URL) {
         effectiveApiUrl = DEPLOYER_API_URL;
-    } else if (userApiUrl.trim()) { 
+    } else if (userApiUrl.trim()) {
         effectiveApiUrl = userApiUrl.trim();
     }
 
@@ -176,13 +186,13 @@ const App: React.FC = () => {
 
         if (!path) {
           console.warn("File without path found, skipping:", file.name);
-          resolve({path: '', content: '', mimeType: ''}); 
+          resolve({path: '', content: '', mimeType: ''});
           return;
         }
         const reader = new FileReader();
         reader.onload = (e) => resolve({ path, content: e.target?.result as string, mimeType });
         reader.onerror = (e) => reject(new Error(`Error reading ${file.name}: ${e.target?.error}`));
-        
+
         if (mimeType.startsWith('image/')) {
           reader.readAsDataURL(file);
         } else {
@@ -194,11 +204,11 @@ const App: React.FC = () => {
     try {
       const results = await Promise.all(fileReadPromises);
       results.forEach(result => {
-        if (result.path) { 
+        if (result.path) {
             newFilesData[result.path] = { content: result.content, mimeType: result.mimeType };
         }
       });
-      setUploadedFilesData(newFilesData); 
+      setUploadedFilesData(newFilesData);
     } catch (error) {
       console.error("Error reading files:", error);
       setStatus(AppStatus.ERROR);
@@ -213,13 +223,13 @@ const App: React.FC = () => {
   const handleFileSelect = useCallback((path: string, content?: string, mimeType?: string) => {
     setSelectedFilePath(path);
     const fileData = uploadedFilesData[path];
-    if (content !== undefined) { 
+    if (content !== undefined) {
       setSelectedFileContent(content);
       setSelectedFileMimeType(mimeType || fileData?.mimeType || 'application/octet-stream');
-    } else if (fileData) { 
+    } else if (fileData) {
       setSelectedFileContent(fileData.content);
       setSelectedFileMimeType(fileData.mimeType);
-    } else { 
+    } else {
       setSelectedFileContent(nodeIsDirectory(path, fileTree) ? null : 'Content not available.');
       setSelectedFileMimeType(null);
     }
@@ -242,13 +252,13 @@ const App: React.FC = () => {
 
   const printNode = (node: FileTreeNode, indent: string, ignoredPaths: string[]): string => {
     if (node.type === 'directory' && ignoredPaths.includes(node.name)) {
-      return ''; 
+      return '';
     }
     let str = `${indent}${node.type === 'directory' ? '📁' : '📄'} ${node.name}`;
     if (node.children) {
       const childStrings = node.children
         .map(child => printNode(child, indent + '  ', ignoredPaths))
-        .filter(childStr => childStr.length > 0); 
+        .filter(childStr => childStr.length > 0);
       if (childStrings.length > 0) {
         str += `\n${childStrings.join('\n')}`;
       }
@@ -258,9 +268,9 @@ const App: React.FC = () => {
 
   const prepareL1PromptContent = useCallback((): string => {
     setStatus(AppStatus.PREPARING_L1_PROMPT);
-    
+
     const projectStructure = fileTree.map(node => printNode(node, '', ignoredFoldersArray)).filter(s => s).join('\n');
-    
+
     const filteredUploadedFilesList = Object.keys(uploadedFilesData)
       .filter(filePath => {
         const parts = filePath.split('/');
@@ -281,9 +291,9 @@ const App: React.FC = () => {
 
     const { effectiveApiKey, effectiveApiUrl } = getEffectiveConfig();
 
-    if (!effectiveApiKey) { 
+    if (!effectiveApiKey) {
         setStatus(AppStatus.ERROR);
-        setStatusMessage("API Key is missing. Please set it in API Settings. If a deployer key was intended, it may not be accessible in this static deployment environment.");
+        setStatusMessage("API Key is missing. Please set it in API Settings. If a deployer key (e.g., VITE_API_KEY) was intended, ensure it's correctly set in your Vercel project and accessible.");
         return;
     }
 
@@ -294,7 +304,7 @@ const App: React.FC = () => {
       setStatusMessage("Failed to parse Level 1 AI output. Check format and console for details.");
       return;
     }
-    
+
     let commonRootPrefix: string | null = null;
     if (fileTree.length === 1 && fileTree[0].type === 'directory') {
         commonRootPrefix = fileTree[0].name;
@@ -345,7 +355,7 @@ const App: React.FC = () => {
       }
       return {
         ...mod,
-        filePath: actualFilePath, 
+        filePath: actualFilePath,
         originalContent: mod.operation !== OperationType.CREATE ? fileData?.content : undefined,
       };
     }).filter(mod => {
@@ -375,10 +385,10 @@ const App: React.FC = () => {
         await processInBatches(
             instructionsWithContent,
             parsedOutput.threadCount,
-            async (instruction) => { 
+            async (instruction) => {
                 try {
                     // Use effectiveApiKey and effectiveApiUrl for the call
-                    const modifiedFileContentRaw = await callGeminiApi(instruction, effectiveApiKey, effectiveApiUrl, geminiModelName); 
+                    const modifiedFileContentRaw = await callGeminiApi(instruction, effectiveApiKey, effectiveApiUrl, geminiModelName);
                     if (modifiedFileContentRaw === null) {
                         throw new Error("API call returned null, indicating an error during the call or empty response.");
                     }
@@ -387,26 +397,26 @@ const App: React.FC = () => {
                     if (finalModifiedContent === null && instruction.operation !== OperationType.DELETE) {
                         console.warn(`Failed to parse Level 2 output for ${instruction.filePath} or content was null. File not modified.`);
                         setStatusMessage(`Warning: Could not parse L2 output for ${instruction.filePath}.`);
-                        anyErrorDuringL2Calls = true; 
-                        return; 
+                        anyErrorDuringL2Calls = true;
+                        return;
                     }
-                    
+
                     const originalMimeType = newUploadedFilesData[instruction.filePath]?.mimeType || 'text/plain';
 
                     if (instruction.operation === OperationType.DELETE || (finalModifiedContent === '' && instruction.operation !== OperationType.CREATE && finalModifiedContent !== null) ) {
                         delete newUploadedFilesData[instruction.filePath];
                         console.log(`File deleted: ${instruction.filePath}`);
-                    } else if (finalModifiedContent !== null) { 
+                    } else if (finalModifiedContent !== null) {
                         newUploadedFilesData[instruction.filePath] = {
                            content: finalModifiedContent,
-                           mimeType: instruction.operation === OperationType.CREATE ? 'text/plain' : originalMimeType 
+                           mimeType: instruction.operation === OperationType.CREATE ? 'text/plain' : originalMimeType
                         };
                         console.log(`File ${instruction.operation === OperationType.CREATE ? 'created' : 'updated'}: ${instruction.filePath}`);
                     }
                 } catch (e: any) {
                     console.error(`Error processing file ${instruction.filePath}: ${e.message}`);
                     setStatusMessage(`Error for ${instruction.filePath}: ${e.message.substring(0,100)}...`);
-                    anyErrorDuringL2Calls = true; 
+                    anyErrorDuringL2Calls = true;
                 }
             },
             (completed, total) => {
@@ -415,12 +425,12 @@ const App: React.FC = () => {
             }
         );
 
-        setUploadedFilesData(newUploadedFilesData); 
+        setUploadedFilesData(newUploadedFilesData);
 
         if (selectedFilePath && newUploadedFilesData[selectedFilePath]?.content !== uploadedFilesData[selectedFilePath]?.content) {
           setSelectedFileContent(newUploadedFilesData[selectedFilePath]?.content || null);
           setSelectedFileMimeType(newUploadedFilesData[selectedFilePath]?.mimeType || null);
-        } else if (selectedFilePath && !newUploadedFilesData.hasOwnProperty(selectedFilePath)) { 
+        } else if (selectedFilePath && !newUploadedFilesData.hasOwnProperty(selectedFilePath)) {
           setSelectedFilePath(null);
           setSelectedFileContent(null);
           setSelectedFileMimeType(null);
@@ -429,11 +439,11 @@ const App: React.FC = () => {
         setStatus(anyErrorDuringL2Calls ? AppStatus.ERROR : AppStatus.DONE);
         setStatusMessage(anyErrorDuringL2Calls ? `Completed with some errors. ${modifiedCount}/${totalCalls} processed. Check console.` : `All ${modifiedCount} modifications processed successfully.`);
 
-    } catch (batchProcessingError: any) { 
+    } catch (batchProcessingError: any) {
         console.error("A batch processing error occurred:", batchProcessingError);
         setStatus(AppStatus.ERROR);
         setStatusMessage(`A critical error occurred during batch processing: ${batchProcessingError.message}. Some files may not have been processed.`);
-        setUploadedFilesData(newUploadedFilesData); 
+        setUploadedFilesData(newUploadedFilesData);
     }
 
   }, [getEffectiveConfig, geminiModelName, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);
@@ -480,29 +490,29 @@ const App: React.FC = () => {
         const diff = MIN_PANE_WIDTH_PERCENT - newMiddle;
         newMiddle = MIN_PANE_WIDTH_PERCENT;
         if (draggingDivider === 'left-middle') newLeft -= diff;
-        else newRight -= diff; 
+        else newRight -= diff;
       }
       if (newRight < MIN_PANE_WIDTH_PERCENT) {
         const diff = MIN_PANE_WIDTH_PERCENT - newRight;
         newRight = MIN_PANE_WIDTH_PERCENT;
         if (draggingDivider === 'middle-right') newMiddle -= diff;
       }
-      
+
       const total = newLeft + newMiddle + newRight;
-      if (Math.abs(total - 100) > 0.1) { 
+      if (Math.abs(total - 100) > 0.1) {
           if (draggingDivider === 'left-middle') {
             const fixed = newRight;
             const remaining = 100 - fixed;
             newLeft = Math.max(MIN_PANE_WIDTH_PERCENT, Math.min(newLeft, remaining - MIN_PANE_WIDTH_PERCENT));
             newMiddle = remaining - newLeft;
-          } else { 
+          } else {
             const fixed = newLeft;
             const remaining = 100 - fixed;
             newRight = Math.max(MIN_PANE_WIDTH_PERCENT, Math.min(newRight, remaining - MIN_PANE_WIDTH_PERCENT));
             newMiddle = remaining - newRight;
           }
       }
-      
+
       const finalSum = newLeft + newMiddle + newRight;
       setPaneWidths({
         left: (newLeft / finalSum) * 100,
@@ -538,24 +548,24 @@ const App: React.FC = () => {
       <div
         ref={mainContentRef}
         id="main-content-area"
-        className="flex flex-1 p-4 space-x-0 overflow-hidden" 
-        style={{ paddingBottom: '50px' }} 
+        className="flex flex-1 p-4 space-x-0 overflow-hidden"
+        style={{ paddingBottom: '50px' }}
       >
-        <div 
-          className="flex flex-col space-y-4 h-full overflow-hidden" 
+        <div
+          className="flex flex-col space-y-4 h-full overflow-hidden"
           style={{ flexBasis: `${paneWidths.left}%` }}
         >
           <div className="flex-shrink-0">
-            <SettingsPanel 
-              apiKey={userApiKey} 
-              setApiKey={setUserApiKey} 
-              apiUrl={userApiUrl} 
+            <SettingsPanel
+              apiKey={userApiKey}
+              setApiKey={setUserApiKey}
+              apiUrl={userApiUrl}
               setApiUrl={setUserApiUrl}
               geminiModelName={geminiModelName}
               setGeminiModelName={setGeminiModelName}
               ignoredFolders={ignoredFoldersInput}
               setIgnoredFolders={setIgnoredFoldersInput}
-              showApiUrlInput={!DEPLOYER_API_URL} // Hide if deployer URL is set (and accessible)
+              showApiUrlInput={!DEPLOYER_API_URL} // Hide if deployer URL (Vite or legacy) is set
             />
           </div>
            <div className="flex-shrink-0">
@@ -581,8 +591,8 @@ const App: React.FC = () => {
             </Button>
            </div>
           <div className="flex-1 min-h-0 overflow-y-auto bg-gray-800 rounded-lg shadow">
-            <FileTreePanel 
-              fileTree={fileTree} 
+            <FileTreePanel
+              fileTree={fileTree}
               onFileSelect={handleFileSelect}
               selectedFilePath={selectedFilePath}
               ignoredFolders={ignoredFoldersArray}
@@ -590,27 +600,27 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        <div 
+        <div
           className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150"
           onMouseDown={(e) => handleDividerMouseDown('left-middle', e)}
           title="Drag to resize"
         ></div>
 
-        <div 
+        <div
             className="flex flex-col h-full overflow-hidden"
             style={{ flexBasis: `${paneWidths.middle}%` }}
-        > 
+        >
           <EditorPanel filePath={selectedFilePath} content={selectedFileContent} mimeType={selectedFileMimeType} />
         </div>
 
-        <div 
+        <div
           className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150"
           onMouseDown={(e) => handleDividerMouseDown('middle-right', e)}
           title="Drag to resize"
         ></div>
 
-        <div 
-            className="flex-shrink-0 h-full overflow-y-auto rounded-lg shadow bg-gray-800" 
+        <div
+            className="flex-shrink-0 h-full overflow-y-auto rounded-lg shadow bg-gray-800"
             style={{ flexBasis: `${paneWidths.right}%` }}
         >
           <Level1Panel
