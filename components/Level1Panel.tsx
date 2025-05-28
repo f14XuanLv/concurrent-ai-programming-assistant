@@ -5,42 +5,32 @@ import { LEVEL_1_PROMPT_TEMPLATE, LEVEL_1_PROMPT_TEMPLATE_PLACEHOLDERS } from '.
 import { AppStatus } from '../types';
 
 interface Level1PanelProps {
-  apiKey: string; // Added apiKey prop
   onPrepareL1Prompt: () => string;
   onProcessL1Output: (output: string) => void;
   currentStatus: AppStatus;
 }
 
-export const Level1Panel: React.FC<Level1PanelProps> = ({ apiKey, onPrepareL1Prompt, onProcessL1Output, currentStatus }) => {
+export const Level1Panel: React.FC<Level1PanelProps> = ({ onPrepareL1Prompt, onProcessL1Output, currentStatus }) => {
   const [l1Prompt, setL1Prompt] = useState<string>(LEVEL_1_PROMPT_TEMPLATE.replace(LEVEL_1_PROMPT_TEMPLATE_PLACEHOLDERS.USER_REQUIREMENTS, ''));
   const [l1Output, setL1Output] = useState<string>('');
   const [userRequirements, setUserRequirements] = useState<string>('');
 
   const handlePreparePrompt = useCallback(() => {
-    const generatedPart = onPrepareL1Prompt(); // This can be "" if no files are uploaded.
+    const generatedPart = onPrepareL1Prompt(); 
 
     let projectStructureForTemplate = "";
     let fileListForTemplate = "";
 
-    // Only process if generatedPart is not empty, otherwise placeholders will be replaced with empty strings.
     if (generatedPart) {
         const parts = generatedPart.split('=====UPLOADED-FILES=====');
-        
-        // Process the first part for project structure.
-        // parts[0] will exist if generatedPart is not empty.
-        // It might be an empty string or the content before the delimiter.
         projectStructureForTemplate = (parts[0] || "") 
             .replace('=====PROJECT-STRUCTURE=====', '')
             .replace('=====END-PROJECT-STRUCTURE=====', '')
             .trim();
-
-        // Process the second part for the file list.
-        // parts[1] might be undefined if the delimiter '=====UPLOADED-FILES=====' was not found.
         fileListForTemplate = (parts[1] || "") 
-            .replace('=====END-UPLOADED-FILES=====', '') // Assumes '=====UPLOADED-FILES=====' was the delimiter
+            .replace('=====END-UPLOADED-FILES=====', '')
             .trim();
     }
-    // If generatedPart was empty, both projectStructureForTemplate and fileListForTemplate will remain ""
 
     let fullPrompt = LEVEL_1_PROMPT_TEMPLATE;
     fullPrompt = fullPrompt.replace(LEVEL_1_PROMPT_TEMPLATE_PLACEHOLDERS.FILE_TREE, projectStructureForTemplate);
@@ -56,10 +46,7 @@ export const Level1Panel: React.FC<Level1PanelProps> = ({ apiKey, onPrepareL1Pro
   };
 
   const handleExecute = () => {
-    if (!apiKey.trim()) {
-      alert('API Key is required. Please set it in the API Settings panel.');
-      return;
-    }
+    // API key check (user-entered or deployer-provided) is now handled in App.tsx before calling onProcessL1Output
     if (l1Output.trim()) {
       onProcessL1Output(l1Output);
     } else {

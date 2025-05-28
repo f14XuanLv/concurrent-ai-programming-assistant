@@ -23,7 +23,6 @@ const FileTreeNodeItem: React.FC<FileTreeNodeItemProps> = React.memo(({ node, on
       onFileSelect(node.path, node.content, node.mimeType);
     } else {
       setIsOpen(!isOpen);
-      // For directories, content and mimeType are undefined
       onFileSelect(node.path, undefined, undefined); 
     }
   };
@@ -39,7 +38,7 @@ const FileTreeNodeItem: React.FC<FileTreeNodeItemProps> = React.memo(({ node, on
         role="treeitem"
         aria-expanded={node.type === 'directory' ? isOpen : undefined}
         aria-selected={isSelected}
-        tabIndex={0} // Make it focusable
+        tabIndex={0} 
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSelect(); }}
       >
         {node.type === 'directory' ? (
@@ -87,7 +86,9 @@ export const FileTreePanel: React.FC<FileTreePanelProps> = ({ fileTree, onFileSe
   }
 
   return (
-    <div className="p-2 bg-gray-800 rounded-lg shadow h-full overflow-y-auto" role="tree" aria-label="Project Explorer">
+    // Removed h-full and overflow-y-auto from this root div.
+    // Parent container in App.tsx now manages height and scrolling.
+    <div className="p-2" role="tree" aria-label="Project Explorer">
       <h3 className="text-lg font-semibold mb-2 text-sky-400 px-2" id="project-explorer-heading">Project Explorer</h3>
       {fileTree.map((node) => (
         <FileTreeNodeItem 

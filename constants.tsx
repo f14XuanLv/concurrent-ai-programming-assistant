@@ -1,9 +1,9 @@
 
 import React from 'react';
 
-export const DEFAULT_API_KEY = "";
-export const DEFAULT_API_URL = "https://api-proxy.me/gemini";
-export const DEFAULT_GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20"; // Default model for L2 AI
+export const DEFAULT_API_KEY = ""; // User must provide or deployer must set via ENV
+export const DEFAULT_API_URL = "https://generativelanguage.googleapis.com"; 
+export const DEFAULT_GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20"; // Updated to an allowed model
 
 export const LEVEL_1_PROMPT_TEMPLATE_PLACEHOLDERS = {
   FILE_TREE: "{文件树内容}",

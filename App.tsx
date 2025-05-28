@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useEffect, ChangeEvent, RefObject, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, ChangeEvent, RefObject, useMemo, useRef } from 'react';
 import { FileTreeNode, ParsedModificationInstruction, Level1Output, AppStatus, OperationType, UploadedFileData } from './types';
 import { DEFAULT_API_KEY, DEFAULT_API_URL, DEFAULT_GEMINI_MODEL_NAME } from './constants';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -10,6 +10,12 @@ import { StatusBar } from './components/StatusBar';
 import { Button } from './components/Button';
 import { parseLevel1Output, parseLevel2Output } from './services/fileParserService';
 import { callGeminiApi } from './services/geminiService';
+
+// Attempt to read deployer-configured environment variables
+// These might be undefined if not set or not exposed to the browser environment
+const DEPLOYER_API_KEY = typeof process !== 'undefined' && process.env && process.env.API_KEY ? process.env.API_KEY : "";
+const DEPLOYER_API_URL = typeof process !== 'undefined' && process.env && process.env.API_URL ? process.env.API_URL : "";
+
 
 // Helper to build file tree
 const buildFileTreeStructure = (filesData: Record<string, UploadedFileData>): FileTreeNode[] => {
@@ -69,16 +75,19 @@ async function processInBatches<T, R,>(
       if (onProgress) onProgress(completedCount, items.length);
     } catch (error) {
         console.error("Error processing batch: ", error);
-        throw error; // Propagate the error to stop further processing if one batch fails catastrophically.
+        throw error; 
     }
   }
   return allResults;
 }
 
+const MIN_PANE_WIDTH_PERCENT = 10; // Minimum 10% width for each pane
 
 const App: React.FC = () => {
-  const [apiKey, setApiKey] = useState<string>(DEFAULT_API_KEY);
-  const [apiUrl, setApiUrl] = useState<string>(DEFAULT_API_URL);
+  // State for user-provided API configurations
+  const [userApiKey, setUserApiKey] = useState<string>(DEFAULT_API_KEY); // Defaults to ""
+  const [userApiUrl, setUserApiUrl] = useState<string>(DEFAULT_API_URL); // Defaults to Google's endpoint
+  
   const [geminiModelName, setGeminiModelName] = useState<string>(DEFAULT_GEMINI_MODEL_NAME);
   const [ignoredFoldersInput, setIgnoredFoldersInput] = useState<string>('.git,node_modules,dist,build');
 
@@ -92,11 +101,31 @@ const App: React.FC = () => {
   const [selectedFileContent, setSelectedFileContent] = useState<string | null>(null);
   const [selectedFileMimeType, setSelectedFileMimeType] = useState<string | null>(null);
 
-
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const [paneWidths, setPaneWidths] = useState({ left: 25, middle: 50, right: 25 });
+  const [draggingDivider, setDraggingDivider] = useState<null | 'left-middle' | 'middle-right'>(null);
+  const dragStartRef = useRef({ x: 0, leftWidth: 0, middleWidth: 0, rightWidth: 0 });
+  const mainContentRef = useRef<HTMLDivElement>(null);
+
+  // Function to determine the effective API key and URL
+  const getEffectiveConfig = useCallback(() => {
+    const effectiveApiKey = userApiKey.trim() || DEPLOYER_API_KEY;
+    
+    let effectiveApiUrl = DEFAULT_API_URL; // Start with the hardcoded default
+    if (DEPLOYER_API_URL) { // Deployer URL, if set, takes highest precedence for URL
+        effectiveApiUrl = DEPLOYER_API_URL;
+    } else if (userApiUrl.trim()) { // Else, if user has input a URL, use that
+        effectiveApiUrl = userApiUrl.trim();
+    }
+    // If neither deployer nor user URL is set, it remains DEFAULT_API_URL
+
+    return { effectiveApiKey, effectiveApiUrl };
+  }, [userApiKey, userApiUrl]);
+
 
   useEffect(() => {
     if (Object.keys(uploadedFilesData).length > 0) {
@@ -153,9 +182,6 @@ const App: React.FC = () => {
         }
       });
       setUploadedFilesData(newFilesData); 
-      // setSelectedFilePath(null); // Cleared by useEffect on uploadedFilesData change
-      // setSelectedFileContent(null);
-      // setSelectedFileMimeType(null);
     } catch (error) {
       console.error("Error reading files:", error);
       setStatus(AppStatus.ERROR);
@@ -176,7 +202,7 @@ const App: React.FC = () => {
     } else if (fileData) { 
       setSelectedFileContent(fileData.content);
       setSelectedFileMimeType(fileData.mimeType);
-    } else { // Directory selected or file data somehow missing
+    } else { 
       setSelectedFileContent(nodeIsDirectory(path, fileTree) ? null : 'Content not available.');
       setSelectedFileMimeType(null);
     }
@@ -187,8 +213,8 @@ const App: React.FC = () => {
         for (const node of nodes) {
             if (node.path === targetPath) return node;
             if (node.children) {
-                const found = findNode(node.children, targetPath);
-                if (found) return found;
+                const foundInChild = findNode(node.children, targetPath);
+                if (foundInChild) return foundInChild;
             }
         }
         return null;
@@ -196,7 +222,6 @@ const App: React.FC = () => {
     const node = findNode(tree, path);
     return node?.type === 'directory';
   };
-
 
   const printNode = (node: FileTreeNode, indent: string, ignoredPaths: string[]): string => {
     if (node.type === 'directory' && ignoredPaths.includes(node.name)) {
@@ -233,14 +258,15 @@ const App: React.FC = () => {
   }, [fileTree, uploadedFilesData, ignoredFoldersArray]);
 
 
-  const processLevel1Output = useCallback(async (output: string) => {
+  const handleProcessL1Output = useCallback(async (output: string) => {
     setStatus(AppStatus.PROCESSING_L1_OUTPUT);
     setStatusMessage("Parsing Level 1 AI output...");
 
-    if (!apiKey.trim() && !DEFAULT_API_KEY) { // Check if API key is missing (considering default might be placeholder)
+    const { effectiveApiKey, effectiveApiUrl } = getEffectiveConfig();
+
+    if (!effectiveApiKey) { 
         setStatus(AppStatus.ERROR);
-        setStatusMessage("API Key is missing. Please set it in API Settings before executing modifications.");
-        // No alert here as Level1Panel should handle it. This is a safeguard.
+        setStatusMessage("API Key is missing. Please set it in API Settings or ensure the application deployer has configured one.");
         return;
     }
 
@@ -266,7 +292,6 @@ const App: React.FC = () => {
         }
     }
 
-
     const activeModifications = parsedOutput.modifications.filter(instruction => {
       const pathParts = instruction.filePath.split('/');
       const isPathIgnored = pathParts.slice(0, -1).some(part => ignoredFoldersArray.includes(part)) ||
@@ -278,7 +303,6 @@ const App: React.FC = () => {
       }
       return true;
     });
-
 
     if (activeModifications.length === 0) {
         setStatus(AppStatus.DONE);
@@ -304,7 +328,7 @@ const App: React.FC = () => {
       }
       return {
         ...mod,
-        filePath: actualFilePath, // Use the potentially corrected file path
+        filePath: actualFilePath, 
         originalContent: mod.operation !== OperationType.CREATE ? fileData?.content : undefined,
       };
     }).filter(mod => {
@@ -334,9 +358,10 @@ const App: React.FC = () => {
         await processInBatches(
             instructionsWithContent,
             parsedOutput.threadCount,
-            async (instruction) => { // instruction.filePath here is the potentially corrected one
+            async (instruction) => { 
                 try {
-                    const modifiedFileContentRaw = await callGeminiApi(instruction, apiKey, apiUrl, geminiModelName); // Pass geminiModelName
+                    // Use effectiveApiKey and effectiveApiUrl for the call
+                    const modifiedFileContentRaw = await callGeminiApi(instruction, effectiveApiKey, effectiveApiUrl, geminiModelName); 
                     if (modifiedFileContentRaw === null) {
                         throw new Error("API call returned null, indicating an error during the call or empty response.");
                     }
@@ -345,8 +370,8 @@ const App: React.FC = () => {
                     if (finalModifiedContent === null && instruction.operation !== OperationType.DELETE) {
                         console.warn(`Failed to parse Level 2 output for ${instruction.filePath} or content was null. File not modified.`);
                         setStatusMessage(`Warning: Could not parse L2 output for ${instruction.filePath}.`);
-                        anyErrorDuringL2Calls = true; // Mark that an error occurred for this file
-                        return; // Skip this file but continue batch
+                        anyErrorDuringL2Calls = true; 
+                        return; 
                     }
                     
                     const originalMimeType = newUploadedFilesData[instruction.filePath]?.mimeType || 'text/plain';
@@ -387,43 +412,141 @@ const App: React.FC = () => {
         setStatus(anyErrorDuringL2Calls ? AppStatus.ERROR : AppStatus.DONE);
         setStatusMessage(anyErrorDuringL2Calls ? `Completed with some errors. ${modifiedCount}/${totalCalls} processed. Check console.` : `All ${modifiedCount} modifications processed successfully.`);
 
-    } catch (batchProcessingError: any) { // This catches errors from processInBatches if it rethrows
+    } catch (batchProcessingError: any) { 
         console.error("A batch processing error occurred:", batchProcessingError);
         setStatus(AppStatus.ERROR);
         setStatusMessage(`A critical error occurred during batch processing: ${batchProcessingError.message}. Some files may not have been processed.`);
-        setUploadedFilesData(newUploadedFilesData); // Reflect potentially partial updates
+        setUploadedFilesData(newUploadedFilesData); 
     }
 
-  }, [apiKey, apiUrl, geminiModelName, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);
+  }, [getEffectiveConfig, geminiModelName, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);
+
+  const handleDividerMouseDown = (divider: 'left-middle' | 'middle-right', event: React.MouseEvent) => {
+    event.preventDefault();
+    setDraggingDivider(divider);
+    dragStartRef.current = {
+      x: event.clientX,
+      leftWidth: paneWidths.left,
+      middleWidth: paneWidths.middle,
+      rightWidth: paneWidths.right,
+    };
+    document.body.style.cursor = 'col-resize';
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!draggingDivider || !mainContentRef.current) return;
+      event.preventDefault();
+
+      const deltaX = event.clientX - dragStartRef.current.x;
+      const containerWidth = mainContentRef.current.offsetWidth;
+      const deltaPercent = (deltaX / containerWidth) * 100;
+
+      let newLeft = dragStartRef.current.leftWidth;
+      let newMiddle = dragStartRef.current.middleWidth;
+      let newRight = dragStartRef.current.rightWidth;
+
+      if (draggingDivider === 'left-middle') {
+        newLeft = dragStartRef.current.leftWidth + deltaPercent;
+        newMiddle = dragStartRef.current.middleWidth - deltaPercent;
+      } else { // middle-right
+        newMiddle = dragStartRef.current.middleWidth + deltaPercent;
+        newRight = dragStartRef.current.rightWidth - deltaPercent;
+      }
+
+      if (newLeft < MIN_PANE_WIDTH_PERCENT) {
+        const diff = MIN_PANE_WIDTH_PERCENT - newLeft;
+        newLeft = MIN_PANE_WIDTH_PERCENT;
+        if (draggingDivider === 'left-middle') newMiddle -= diff;
+      }
+      if (newMiddle < MIN_PANE_WIDTH_PERCENT) {
+        const diff = MIN_PANE_WIDTH_PERCENT - newMiddle;
+        newMiddle = MIN_PANE_WIDTH_PERCENT;
+        if (draggingDivider === 'left-middle') newLeft -= diff;
+        else newRight -= diff; 
+      }
+      if (newRight < MIN_PANE_WIDTH_PERCENT) {
+        const diff = MIN_PANE_WIDTH_PERCENT - newRight;
+        newRight = MIN_PANE_WIDTH_PERCENT;
+        if (draggingDivider === 'middle-right') newMiddle -= diff;
+      }
+      
+      const total = newLeft + newMiddle + newRight;
+      if (Math.abs(total - 100) > 0.1) { 
+          if (draggingDivider === 'left-middle') {
+            const fixed = newRight;
+            const remaining = 100 - fixed;
+            newLeft = Math.max(MIN_PANE_WIDTH_PERCENT, Math.min(newLeft, remaining - MIN_PANE_WIDTH_PERCENT));
+            newMiddle = remaining - newLeft;
+          } else { 
+            const fixed = newLeft;
+            const remaining = 100 - fixed;
+            newRight = Math.max(MIN_PANE_WIDTH_PERCENT, Math.min(newRight, remaining - MIN_PANE_WIDTH_PERCENT));
+            newMiddle = remaining - newRight;
+          }
+      }
+      
+      const finalSum = newLeft + newMiddle + newRight;
+      setPaneWidths({
+        left: (newLeft / finalSum) * 100,
+        middle: (newMiddle / finalSum) * 100,
+        right: (newRight / finalSum) * 100,
+      });
+    };
+
+    const handleMouseUp = () => {
+      setDraggingDivider(null);
+      document.body.style.cursor = 'default';
+    };
+
+    if (draggingDivider) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'default';
+    };
+  }, [draggingDivider]);
 
 
   return (
     <div className="flex flex-col h-screen antialiased text-gray-200 bg-gray-900">
-      <header className="p-4 bg-gray-800 shadow-md">
+      <header className="p-4 bg-gray-800 shadow-md flex-shrink-0">
         <h1 className="text-2xl font-bold text-sky-400">Concurrent AI Programming Assistant</h1>
       </header>
 
-      <div 
-        className="flex flex-grow p-4 space-x-4 overflow-hidden" 
-        style={{height: 'calc(100vh - 68px - 48px)'}} // Adjusted 45px to 48px for status bar
+      <div
+        ref={mainContentRef}
+        id="main-content-area"
+        className="flex flex-1 p-4 space-x-0 overflow-hidden" 
+        style={{ paddingBottom: '50px' }} 
       >
-        <div className="w-1/4 flex flex-col space-y-4">
-          <SettingsPanel 
-            apiKey={apiKey} 
-            setApiKey={setApiKey} 
-            apiUrl={apiUrl} 
-            setApiUrl={setApiUrl}
-            geminiModelName={geminiModelName}
-            setGeminiModelName={setGeminiModelName}
-            ignoredFolders={ignoredFoldersInput}
-            setIgnoredFolders={setIgnoredFoldersInput}
-          />
-           <div>
+        <div 
+          className="flex flex-col space-y-4 h-full overflow-hidden" 
+          style={{ flexBasis: `${paneWidths.left}%` }}
+        >
+          <div className="flex-shrink-0">
+            <SettingsPanel 
+              apiKey={userApiKey} 
+              setApiKey={setUserApiKey} 
+              apiUrl={userApiUrl} 
+              setApiUrl={setUserApiUrl}
+              geminiModelName={geminiModelName}
+              setGeminiModelName={setGeminiModelName}
+              ignoredFolders={ignoredFoldersInput}
+              setIgnoredFolders={setIgnoredFoldersInput}
+              showApiUrlInput={!DEPLOYER_API_URL} // Hide if deployer URL is set
+            />
+          </div>
+           <div className="flex-shrink-0">
             <input
                 type="file"
-                // @ts-ignore webkitdirectory is a non-standard attribute but required for folder selection
+                // @ts-ignore
                 webkitdirectory=""
-                // @ts-ignore directory is a non-standard attribute but required for folder selection
+                // @ts-ignore
                 directory=""
                 multiple
                 ref={fileInputRef as RefObject<HTMLInputElement & {webkitdirectory:string, directory: string}>}
@@ -440,25 +563,42 @@ const App: React.FC = () => {
                 {Object.keys(uploadedFilesData).length > 0 ? 'Re-upload Project Folder' : 'Upload Project Folder'}
             </Button>
            </div>
-          <div className="flex-grow min-h-0"> {/* This div needs to manage overflow for FileTreePanel */}
+          <div className="flex-1 min-h-0 overflow-y-auto bg-gray-800 rounded-lg shadow">
             <FileTreePanel 
               fileTree={fileTree} 
-              onFileSelect={(path, nodeContent, nodeMimeType) => handleFileSelect(path, nodeContent, nodeMimeType)}
+              onFileSelect={handleFileSelect}
               selectedFilePath={selectedFilePath}
               ignoredFolders={ignoredFoldersArray}
             />
           </div>
         </div>
 
-        <div className="w-1/2 min-h-0"> {/* Editor panel should take available height */}
+        <div 
+          className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150"
+          onMouseDown={(e) => handleDividerMouseDown('left-middle', e)}
+          title="Drag to resize"
+        ></div>
+
+        <div 
+            className="flex flex-col h-full overflow-hidden"
+            style={{ flexBasis: `${paneWidths.middle}%` }}
+        > 
           <EditorPanel filePath={selectedFilePath} content={selectedFileContent} mimeType={selectedFileMimeType} />
         </div>
 
-        <div className="w-1/4 flex-shrink-0 overflow-y-auto"> {/* This panel will scroll independently */}
+        <div 
+          className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150"
+          onMouseDown={(e) => handleDividerMouseDown('middle-right', e)}
+          title="Drag to resize"
+        ></div>
+
+        <div 
+            className="flex-shrink-0 h-full overflow-y-auto rounded-lg shadow bg-gray-800" 
+            style={{ flexBasis: `${paneWidths.right}%` }}
+        >
           <Level1Panel
-            apiKey={apiKey} // Pass apiKey
             onPrepareL1Prompt={Object.keys(uploadedFilesData).length > 0 ? prepareL1PromptContent : (() => { alert("Please upload a project first."); return ""; })}
-            onProcessL1Output={processLevel1Output}
+            onProcessL1Output={handleProcessL1Output}
             currentStatus={status}
           />
         </div>
