@@ -1,7 +1,7 @@
 
 import React, { useState, useCallback, useEffect, ChangeEvent, RefObject, useMemo, useRef } from 'react';
 import { FileTreeNode, ParsedModificationInstruction, Level1Output, AppStatus, OperationType, UploadedFileData } from './types';
-import { DEFAULT_API_KEY, DEFAULT_API_URL, DEFAULT_GEMINI_MODEL_NAME } from './constants';
+import { DEFAULT_GEMINI_MODEL_NAME, DEFAULT_USER_API_URL } from './constants';
 import { SettingsPanel } from './components/SettingsPanel';
 import { FileTreePanel } from './components/FileTreePanel';
 import { EditorPanel } from './components/EditorPanel';
@@ -10,33 +10,6 @@ import { StatusBar } from './components/StatusBar';
 import { Button } from './components/Button';
 import { parseLevel1Output, parseLevel2Output } from './services/fileParserService';
 import { callGeminiApi } from './services/geminiService';
-
-// Attempt to read deployer-configured environment variables.
-// For Vercel deployments using Vite (as indicated by `vite build` in logs):
-// 1. Environment variables MUST be prefixed with `VITE_` in Vercel UI (e.g., VITE_API_KEY).
-// 2. Vite exposes these client-side via `import.meta.env.VITE_YOUR_VARIABLE`.
-const VITE_DEPLOYER_API_KEY = (
-    typeof import.meta !== 'undefined' && // Check if import.meta exists
-    (import.meta as any).env && // Check if .env exists on it (as any)
-    (import.meta as any).env.VITE_API_KEY // Check if .VITE_API_KEY exists on .env
-) ? String(((import.meta as any).env).VITE_API_KEY) : "";
-
-const VITE_DEPLOYER_API_URL = (
-    typeof import.meta !== 'undefined' &&
-    (import.meta as any).env &&
-    (import.meta as any).env.VITE_API_URL
-) ? String(((import.meta as any).env).VITE_API_URL) : "";
-
-
-// Fallback for other environments or if VITE_ vars are not set (less common for client-side Vercel/Vite).
-// `process.env.API_KEY` is generally not populated client-side by Vite builds from Vercel dashboard variables.
-const LEGACY_DEPLOYER_API_KEY = (typeof process !== 'undefined' && process.env && process.env.API_KEY) ? process.env.API_KEY : "";
-const LEGACY_DEPLOYER_API_URL = (typeof process !== 'undefined' && process.env && process.env.API_URL) ? process.env.API_URL : "";
-
-// Prioritize Vite's environment variables, then legacy, then empty.
-const DEPLOYER_API_KEY = VITE_DEPLOYER_API_KEY || LEGACY_DEPLOYER_API_KEY;
-const DEPLOYER_API_URL = VITE_DEPLOYER_API_URL || LEGACY_DEPLOYER_API_URL;
-
 
 // Helper to build file tree
 const buildFileTreeStructure = (filesData: Record<string, UploadedFileData>): FileTreeNode[] => {
@@ -96,7 +69,10 @@ async function processInBatches<T, R,>(
       if (onProgress) onProgress(completedCount, items.length);
     } catch (error) {
         console.error("Error processing batch: ", error);
-        throw error;
+        // Allow individual errors to be handled by the processor,
+        // but if Promise.all itself rejects (e.g., unhandled rejection in processor not caught there), rethrow.
+        // The processor should ideally catch its own errors and return a specific error state if needed.
+        throw error; 
     }
   }
   return allResults;
@@ -105,10 +81,8 @@ async function processInBatches<T, R,>(
 const MIN_PANE_WIDTH_PERCENT = 10; // Minimum 10% width for each pane
 
 const App: React.FC = () => {
-  // State for user-provided API configurations
-  const [userApiKey, setUserApiKey] = useState<string>(DEFAULT_API_KEY); // Defaults to ""
-  const [userApiUrl, setUserApiUrl] = useState<string>(DEFAULT_API_URL); // Defaults to Google's endpoint
-
+  const [userApiKey, setUserApiKey] = useState<string>('');
+  const [userApiUrl, setUserApiUrl] = useState<string>(DEFAULT_USER_API_URL);
   const [geminiModelName, setGeminiModelName] = useState<string>(DEFAULT_GEMINI_MODEL_NAME);
   const [ignoredFoldersInput, setIgnoredFoldersInput] = useState<string>('.git,node_modules,dist,build');
 
@@ -131,27 +105,6 @@ const App: React.FC = () => {
   const [draggingDivider, setDraggingDivider] = useState<null | 'left-middle' | 'middle-right'>(null);
   const dragStartRef = useRef({ x: 0, leftWidth: 0, middleWidth: 0, rightWidth: 0 });
   const mainContentRef = useRef<HTMLDivElement>(null);
-
-  // Function to determine the effective API key and URL
-  const getEffectiveConfig = useCallback(() => {
-    // User-entered API key takes highest priority.
-    // Then, DEPLOYER_API_KEY (which now correctly checks VITE_API_KEY first).
-    const effectiveApiKey = userApiKey.trim() || DEPLOYER_API_KEY;
-
-    let effectiveApiUrl = DEFAULT_API_URL; // Start with the hardcoded default
-
-    // For API URL:
-    // 1. DEPLOYER_API_URL (which now checks VITE_API_URL first) takes highest precedence.
-    // 2. If DEPLOYER_API_URL is empty, user-entered URL is used.
-    // 3. If both are empty, hardcoded DEFAULT_API_URL is used.
-    if (DEPLOYER_API_URL) {
-        effectiveApiUrl = DEPLOYER_API_URL;
-    } else if (userApiUrl.trim()) {
-        effectiveApiUrl = userApiUrl.trim();
-    }
-
-    return { effectiveApiKey, effectiveApiUrl };
-  }, [userApiKey, userApiUrl]);
 
 
   useEffect(() => {
@@ -186,7 +139,7 @@ const App: React.FC = () => {
 
         if (!path) {
           console.warn("File without path found, skipping:", file.name);
-          resolve({path: '', content: '', mimeType: ''});
+          resolve({path: '', content: '', mimeType: ''}); // Resolve to allow Promise.all to continue
           return;
         }
         const reader = new FileReader();
@@ -204,17 +157,17 @@ const App: React.FC = () => {
     try {
       const results = await Promise.all(fileReadPromises);
       results.forEach(result => {
-        if (result.path) {
+        if (result.path) { // Only add if path is valid
             newFilesData[result.path] = { content: result.content, mimeType: result.mimeType };
         }
       });
-      setUploadedFilesData(newFilesData);
+      setUploadedFilesData(newFilesData); // This will trigger the useEffect for tree building
     } catch (error) {
       console.error("Error reading files:", error);
       setStatus(AppStatus.ERROR);
       setStatusMessage(error instanceof Error ? error.message : "Failed to read files.");
     } finally {
-        if (fileInputRef.current) {
+        if (fileInputRef.current) { // Reset file input
             fileInputRef.current.value = "";
         }
     }
@@ -223,13 +176,13 @@ const App: React.FC = () => {
   const handleFileSelect = useCallback((path: string, content?: string, mimeType?: string) => {
     setSelectedFilePath(path);
     const fileData = uploadedFilesData[path];
-    if (content !== undefined) {
+    if (content !== undefined) { // Content explicitly passed (e.g. from FileTreeNodeItem if it stored it)
       setSelectedFileContent(content);
       setSelectedFileMimeType(mimeType || fileData?.mimeType || 'application/octet-stream');
-    } else if (fileData) {
+    } else if (fileData) { // Fallback to lookup in uploadedFilesData
       setSelectedFileContent(fileData.content);
       setSelectedFileMimeType(fileData.mimeType);
-    } else {
+    } else { // Path selected might be a directory or file not found
       setSelectedFileContent(nodeIsDirectory(path, fileTree) ? null : 'Content not available.');
       setSelectedFileMimeType(null);
     }
@@ -252,13 +205,13 @@ const App: React.FC = () => {
 
   const printNode = (node: FileTreeNode, indent: string, ignoredPaths: string[]): string => {
     if (node.type === 'directory' && ignoredPaths.includes(node.name)) {
-      return '';
+      return ''; // Skip ignored directories
     }
     let str = `${indent}${node.type === 'directory' ? '📁' : '📄'} ${node.name}`;
     if (node.children) {
       const childStrings = node.children
         .map(child => printNode(child, indent + '  ', ignoredPaths))
-        .filter(childStr => childStr.length > 0);
+        .filter(childStr => childStr.length > 0); // Filter out empty strings from ignored children
       if (childStrings.length > 0) {
         str += `\n${childStrings.join('\n')}`;
       }
@@ -271,9 +224,11 @@ const App: React.FC = () => {
 
     const projectStructure = fileTree.map(node => printNode(node, '', ignoredFoldersArray)).filter(s => s).join('\n');
 
+    // Filter out files within ignored folders from the list for L1 AI
     const filteredUploadedFilesList = Object.keys(uploadedFilesData)
       .filter(filePath => {
         const parts = filePath.split('/');
+        // Check if any parent directory segment is in the ignoredFoldersArray
         return !parts.slice(0, -1).some(part => ignoredFoldersArray.includes(part));
       })
       .sort()
@@ -289,13 +244,13 @@ const App: React.FC = () => {
     setStatus(AppStatus.PROCESSING_L1_OUTPUT);
     setStatusMessage("Parsing Level 1 AI output...");
 
-    const { effectiveApiKey, effectiveApiUrl } = getEffectiveConfig();
-
-    if (!effectiveApiKey) {
-        setStatus(AppStatus.ERROR);
-        setStatusMessage("API Key is missing. Please set it in API Settings. If a deployer key (e.g., VITE_API_KEY) was intended, ensure it's correctly set in your Vercel project and accessible.");
-        return;
+    if (!userApiKey.trim()) {
+        // Check if the backend proxy is available (e.g., by trying a lightweight health check or assuming it is if not self-hosting with user keys)
+        // For now, we'll assume the proxy is available if no userApiKey is set.
+        // Production deployments should ensure the proxy at /api/gemini is functional.
+        console.info("No user API key provided. L2 AI calls will attempt to use backend proxy.");
     }
+
 
     const parsedOutput: Level1Output | null = parseLevel1Output(output);
 
@@ -304,20 +259,21 @@ const App: React.FC = () => {
       setStatusMessage("Failed to parse Level 1 AI output. Check format and console for details.");
       return;
     }
-
+    
     let commonRootPrefix: string | null = null;
     if (fileTree.length === 1 && fileTree[0].type === 'directory') {
         commonRootPrefix = fileTree[0].name;
     } else if (Object.keys(uploadedFilesData).length > 0) {
         const allPaths = Object.keys(uploadedFilesData);
         const firstPathSegments = allPaths[0].split('/');
-        if (firstPathSegments.length > 1) {
+        if (firstPathSegments.length > 1) { // Check if there is at least one directory segment
             const potentialPrefix = firstPathSegments[0];
             if (allPaths.every(p => p.startsWith(potentialPrefix + '/'))) {
                 commonRootPrefix = potentialPrefix;
             }
         }
     }
+
 
     const activeModifications = parsedOutput.modifications.filter(instruction => {
       const pathParts = instruction.filePath.split('/');
@@ -330,6 +286,7 @@ const App: React.FC = () => {
       }
       return true;
     });
+
 
     if (activeModifications.length === 0) {
         setStatus(AppStatus.DONE);
@@ -350,15 +307,15 @@ const App: React.FC = () => {
               console.warn(`Path auto-correction: L1 output used '${mod.filePath}', matched to '${potentialFullPath}' by prepending root '${commonRootPrefix}'.`);
               setStatusMessage(`Info: Path for ${mod.filePath} auto-corrected to ${potentialFullPath}.`);
               fileData = potentialFileData;
-              actualFilePath = potentialFullPath;
+              actualFilePath = potentialFullPath; 
           }
       }
       return {
         ...mod,
-        filePath: actualFilePath,
+        filePath: actualFilePath, 
         originalContent: mod.operation !== OperationType.CREATE ? fileData?.content : undefined,
       };
-    }).filter(mod => {
+    }).filter(mod => { 
         if (mod.operation !== OperationType.CREATE && mod.originalContent === undefined) {
             console.warn(`Skipping ${mod.operation} for non-existent or uncorrected file path: ${mod.filePath}`);
             setStatusMessage(`Warning: File ${mod.filePath} not found for ${mod.operation}. Skipping.`);
@@ -372,6 +329,7 @@ const App: React.FC = () => {
         setStatusMessage("All specified modifications were for non-existent files (even after path correction attempts). No operations to perform.");
         return;
     }
+
 
     setStatus(AppStatus.CALLING_L2_AI);
     let modifiedCount = 0;
@@ -387,18 +345,22 @@ const App: React.FC = () => {
             parsedOutput.threadCount,
             async (instruction) => {
                 try {
-                    // Use effectiveApiKey and effectiveApiUrl for the call
-                    const modifiedFileContentRaw = await callGeminiApi(instruction, effectiveApiKey, effectiveApiUrl, geminiModelName);
+                    // Pass userApiKey and userApiUrl to callGeminiApi
+                    const modifiedFileContentRaw = await callGeminiApi(instruction, geminiModelName, userApiKey, userApiUrl);
+                    
                     if (modifiedFileContentRaw === null) {
-                        throw new Error("API call returned null, indicating an error during the call or empty response.");
+                        if (instruction.operation !== OperationType.DELETE) {
+                           throw new Error("API call returned null, indicating an error during the call or empty response.");
+                        }
                     }
-                    const finalModifiedContent = parseLevel2Output(modifiedFileContentRaw);
+                    
+                    const finalModifiedContent = parseLevel2Output(modifiedFileContentRaw as string); 
 
                     if (finalModifiedContent === null && instruction.operation !== OperationType.DELETE) {
                         console.warn(`Failed to parse Level 2 output for ${instruction.filePath} or content was null. File not modified.`);
                         setStatusMessage(`Warning: Could not parse L2 output for ${instruction.filePath}.`);
-                        anyErrorDuringL2Calls = true;
-                        return;
+                        anyErrorDuringL2Calls = true; 
+                        return; 
                     }
 
                     const originalMimeType = newUploadedFilesData[instruction.filePath]?.mimeType || 'text/plain';
@@ -406,7 +368,7 @@ const App: React.FC = () => {
                     if (instruction.operation === OperationType.DELETE || (finalModifiedContent === '' && instruction.operation !== OperationType.CREATE && finalModifiedContent !== null) ) {
                         delete newUploadedFilesData[instruction.filePath];
                         console.log(`File deleted: ${instruction.filePath}`);
-                    } else if (finalModifiedContent !== null) {
+                    } else if (finalModifiedContent !== null) { 
                         newUploadedFilesData[instruction.filePath] = {
                            content: finalModifiedContent,
                            mimeType: instruction.operation === OperationType.CREATE ? 'text/plain' : originalMimeType
@@ -416,7 +378,7 @@ const App: React.FC = () => {
                 } catch (e: any) {
                     console.error(`Error processing file ${instruction.filePath}: ${e.message}`);
                     setStatusMessage(`Error for ${instruction.filePath}: ${e.message.substring(0,100)}...`);
-                    anyErrorDuringL2Calls = true;
+                    anyErrorDuringL2Calls = true; 
                 }
             },
             (completed, total) => {
@@ -425,12 +387,12 @@ const App: React.FC = () => {
             }
         );
 
-        setUploadedFilesData(newUploadedFilesData);
+        setUploadedFilesData(newUploadedFilesData); 
 
         if (selectedFilePath && newUploadedFilesData[selectedFilePath]?.content !== uploadedFilesData[selectedFilePath]?.content) {
           setSelectedFileContent(newUploadedFilesData[selectedFilePath]?.content || null);
           setSelectedFileMimeType(newUploadedFilesData[selectedFilePath]?.mimeType || null);
-        } else if (selectedFilePath && !newUploadedFilesData.hasOwnProperty(selectedFilePath)) {
+        } else if (selectedFilePath && !newUploadedFilesData.hasOwnProperty(selectedFilePath)) { 
           setSelectedFilePath(null);
           setSelectedFileContent(null);
           setSelectedFileMimeType(null);
@@ -439,14 +401,14 @@ const App: React.FC = () => {
         setStatus(anyErrorDuringL2Calls ? AppStatus.ERROR : AppStatus.DONE);
         setStatusMessage(anyErrorDuringL2Calls ? `Completed with some errors. ${modifiedCount}/${totalCalls} processed. Check console.` : `All ${modifiedCount} modifications processed successfully.`);
 
-    } catch (batchProcessingError: any) {
+    } catch (batchProcessingError: any) { 
         console.error("A batch processing error occurred:", batchProcessingError);
         setStatus(AppStatus.ERROR);
         setStatusMessage(`A critical error occurred during batch processing: ${batchProcessingError.message}. Some files may not have been processed.`);
         setUploadedFilesData(newUploadedFilesData);
     }
 
-  }, [getEffectiveConfig, geminiModelName, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);
+  }, [geminiModelName, userApiKey, userApiUrl, uploadedFilesData, selectedFilePath, ignoredFoldersArray, fileTree]);
 
   const handleDividerMouseDown = (divider: 'left-middle' | 'middle-right', event: React.MouseEvent) => {
     event.preventDefault();
@@ -484,41 +446,28 @@ const App: React.FC = () => {
       if (newLeft < MIN_PANE_WIDTH_PERCENT) {
         const diff = MIN_PANE_WIDTH_PERCENT - newLeft;
         newLeft = MIN_PANE_WIDTH_PERCENT;
-        if (draggingDivider === 'left-middle') newMiddle -= diff;
+        if (draggingDivider === 'left-middle') newMiddle -= diff; 
       }
       if (newMiddle < MIN_PANE_WIDTH_PERCENT) {
         const diff = MIN_PANE_WIDTH_PERCENT - newMiddle;
         newMiddle = MIN_PANE_WIDTH_PERCENT;
-        if (draggingDivider === 'left-middle') newLeft -= diff;
+        if (draggingDivider === 'left-middle') newLeft -= diff; 
         else newRight -= diff;
       }
       if (newRight < MIN_PANE_WIDTH_PERCENT) {
         const diff = MIN_PANE_WIDTH_PERCENT - newRight;
         newRight = MIN_PANE_WIDTH_PERCENT;
-        if (draggingDivider === 'middle-right') newMiddle -= diff;
+        if (draggingDivider === 'middle-right') newMiddle -= diff; 
       }
-
-      const total = newLeft + newMiddle + newRight;
-      if (Math.abs(total - 100) > 0.1) {
-          if (draggingDivider === 'left-middle') {
-            const fixed = newRight;
-            const remaining = 100 - fixed;
-            newLeft = Math.max(MIN_PANE_WIDTH_PERCENT, Math.min(newLeft, remaining - MIN_PANE_WIDTH_PERCENT));
-            newMiddle = remaining - newLeft;
-          } else {
-            const fixed = newLeft;
-            const remaining = 100 - fixed;
-            newRight = Math.max(MIN_PANE_WIDTH_PERCENT, Math.min(newRight, remaining - MIN_PANE_WIDTH_PERCENT));
-            newMiddle = remaining - newRight;
-          }
-      }
-
+      
       const finalSum = newLeft + newMiddle + newRight;
-      setPaneWidths({
-        left: (newLeft / finalSum) * 100,
-        middle: (newMiddle / finalSum) * 100,
-        right: (newRight / finalSum) * 100,
-      });
+      if (finalSum > 0) { // Avoid division by zero if all widths somehow become zero
+        setPaneWidths({
+            left: (newLeft / finalSum) * 100,
+            middle: (newMiddle / finalSum) * 100,
+            right: (newRight / finalSum) * 100,
+        });
+      }
     };
 
     const handleMouseUp = () => {
@@ -534,9 +483,9 @@ const App: React.FC = () => {
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = 'default';
+      document.body.style.cursor = 'default'; 
     };
-  }, [draggingDivider]);
+  }, [draggingDivider]); 
 
 
   return (
@@ -548,49 +497,48 @@ const App: React.FC = () => {
       <div
         ref={mainContentRef}
         id="main-content-area"
-        className="flex flex-1 p-4 space-x-0 overflow-hidden"
-        style={{ paddingBottom: '50px' }}
+        className="flex flex-1 p-4 space-x-0 overflow-hidden" 
+        style={{ paddingBottom: '50px' }} 
       >
+        {/* Left Pane */}
         <div
           className="flex flex-col space-y-4 h-full overflow-hidden"
           style={{ flexBasis: `${paneWidths.left}%` }}
         >
           <div className="flex-shrink-0">
             <SettingsPanel
-              apiKey={userApiKey}
-              setApiKey={setUserApiKey}
-              apiUrl={userApiUrl}
-              setApiUrl={setUserApiUrl}
+              userApiKey={userApiKey}
+              setUserApiKey={setUserApiKey}
+              userApiUrl={userApiUrl}
+              setUserApiUrl={setUserApiUrl}
               geminiModelName={geminiModelName}
               setGeminiModelName={setGeminiModelName}
               ignoredFolders={ignoredFoldersInput}
               setIgnoredFolders={setIgnoredFoldersInput}
-              showApiUrlInput={!DEPLOYER_API_URL} // Hide if deployer URL (Vite or legacy) is set
             />
           </div>
-           <div className="flex-shrink-0">
+           <div className="flex-shrink-0"> 
             <input
                 type="file"
-                // @ts-ignore
+                // @ts-ignore 
                 webkitdirectory=""
-                // @ts-ignore
                 directory=""
                 multiple
                 ref={fileInputRef as RefObject<HTMLInputElement & {webkitdirectory:string, directory: string}>}
                 onChange={handleFolderUpload}
-                className="hidden"
+                className="hidden" 
                 id="folderUploadInput"
             />
             <Button
                 onClick={() => fileInputRef.current?.click()}
-                className="w-full"
+                className="w-full" 
                 disabled={status === AppStatus.UPLOADING || status === AppStatus.GENERATING_TREE}
                 isLoading={status === AppStatus.UPLOADING || status === AppStatus.GENERATING_TREE}
             >
                 {Object.keys(uploadedFilesData).length > 0 ? 'Re-upload Project Folder' : 'Upload Project Folder'}
             </Button>
            </div>
-          <div className="flex-1 min-h-0 overflow-y-auto bg-gray-800 rounded-lg shadow">
+          <div className="flex-1 min-h-0 overflow-y-auto bg-gray-800 rounded-lg shadow"> 
             <FileTreePanel
               fileTree={fileTree}
               onFileSelect={handleFileSelect}
@@ -600,27 +548,35 @@ const App: React.FC = () => {
           </div>
         </div>
 
+        {/* Divider 1 */}
         <div
-          className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150"
+          className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150 rounded"
           onMouseDown={(e) => handleDividerMouseDown('left-middle', e)}
           title="Drag to resize"
+          role="separator"
+          aria-orientation="vertical"
         ></div>
 
+        {/* Middle Pane */}
         <div
-            className="flex flex-col h-full overflow-hidden"
+            className="flex flex-col h-full overflow-hidden" 
             style={{ flexBasis: `${paneWidths.middle}%` }}
         >
           <EditorPanel filePath={selectedFilePath} content={selectedFileContent} mimeType={selectedFileMimeType} />
         </div>
 
+        {/* Divider 2 */}
         <div
-          className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150"
+          className="w-2 mx-1.5 flex-shrink-0 bg-gray-700 hover:bg-sky-600 cursor-col-resize transition-colors duration-150 rounded"
           onMouseDown={(e) => handleDividerMouseDown('middle-right', e)}
           title="Drag to resize"
+          role="separator"
+          aria-orientation="vertical"
         ></div>
 
+        {/* Right Pane */}
         <div
-            className="flex-shrink-0 h-full overflow-y-auto rounded-lg shadow bg-gray-800"
+            className="flex-shrink-0 h-full overflow-y-auto rounded-lg shadow bg-gray-800" 
             style={{ flexBasis: `${paneWidths.right}%` }}
         >
           <Level1Panel

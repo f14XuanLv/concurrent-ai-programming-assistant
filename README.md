@@ -2,124 +2,129 @@
 
 ## Background
 
-Large Language Models (LLMs) like Gemini and Claude are increasingly used to assist developers in modifying code. However, a common bottleneck is that these models typically process modification requests for one file or a set of files serially. Even if a single prompt requests changes to multiple files, the developer often waits for the AI to complete all modifications before seeing results. This can lead to significant waiting times and reduced efficiency.
+Large Language Models (LLMs) like Gemini and Claude are increasingly used to assist developers in modifying code. However, a common bottleneck is that these models typically process modification requests for one file or a set of files serially.
 
 The **Concurrent AI Programming Assistant** is a web-based IDE designed to address this challenge. It employs a two-tier AI strategy:
 
-1.  **Level 1 AI (Global Analysis - Manual Step):** A powerful AI (e.g., Claude-4-opus or a capable Gemini model) is used by the user to perform a global analysis of the codebase. The user provides the AI with the project structure, relevant file contents, and their high-level requirements. The AI's role is to identify all necessary modifications across multiple files and output these instructions in a specific, structured format, including a suggested number of concurrent operations.
-2.  **Level 2 AI (File-Specific Execution - Automated by this App):** The user pastes the structured output from the Level 1 AI into this application. The application then parses these instructions and makes concurrent API calls to a specified Gemini model (e.g., `gemini-2.5-flash-preview-05-20` by default, configurable by the user) to execute the specific code modifications for each file in parallel. This application uses the `@google/genai` SDK for these calls.
+1.  **Level 1 AI (Global Analysis - Manual Step):** A powerful AI (e.g., Claude-4-opus or a capable Gemini model) is used by the user to perform a global analysis of the codebase. The user provides the AI with the project structure, relevant file contents, and their high-level requirements. The AI's role is to identify all necessary modifications across multiple files and output these instructions in a specific, structured format.
+2.  **Level 2 AI (File-Specific Execution - Automated by this App):** The user pastes the structured output from the Level 1 AI into this application. The application then parses these instructions and triggers Level 2 AI calls based on the following modes:
+    *   **Mode 1: Using Deployer's Credentials (via Backend Proxy - Default)**
+        *   **Condition:** The "Your Gemini API Key" field in the app's settings panel is left *empty*.
+        *   **Action:** The client-side app sends modification details (prompt, model name) to a **backend proxy function** (e.g., `/api/gemini` hosted on Vercel).
+        *   **Proxy Behavior:** This proxy securely uses the deployer's `GEMINI_API_KEY` (and optionally `GEMINI_API_URL`) set as server-side environment variables to make the actual call to the configured Gemini model.
+    *   **Mode 2: Using User's Credentials (Direct Client-Side Call)**
+        *   **Condition:** The user *enters their own Gemini API Key* in the app's settings panel.
+        *   **Action:** The application makes calls **directly from the browser** to the Gemini API using the user's provided API key and the configured model. An optional API URL can also be specified by the user in settings.
 
-This approach aims to significantly speed up the process of applying AI-suggested changes to a codebase by parallelizing the execution of individual file modifications.
+This approach aims to significantly speed up applying AI-suggested changes by parallelizing individual file modifications, while offering flexibility and security in how API keys are managed.
 
 ## Features
 
-*   **Project Upload:** Upload an entire project folder directly into the browser.
-*   **Interactive File Tree:** View and navigate your project's directory structure.
-*   **File Content Viewer:**
-    *   Display text-based file contents.
-    *   Render common image types (PNG, JPEG, GIF, SVG) directly in the editor panel.
-*   **Level 1 Prompt Helper:**
-    *   Assists in generating a structured prompt for your chosen Level 1 AI.
-    *   Automatically includes the project's file tree and a list of uploaded files.
-    *   Provides a template for you to add your specific modification requirements.
-*   **Level 1 Output Processing:**
-    *   Parses the structured output (containing thread count and detailed modification instructions for each file) from your Level 1 AI.
-*   **Concurrent Level 2 AI Execution:**
-    *   Makes parallel API calls to the configured Gemini model using the `@google/genai` SDK, based on the parsed instructions and suggested thread count.
-*   **In-Memory File Updates:** Applies the modifications received from the Level 2 AI to the in-browser representation of your files.
-*   **Configurable Settings with Hierarchy:**
-    *   **API Key:**
-        1.  User-entered key (in Settings Panel) takes highest priority.
-        2.  If user field is empty, a deployer-provided key is used. For Vercel + Vite builds, this means `VITE_API_KEY` set in Vercel UI and accessed via `import.meta.env.VITE_API_KEY`.
-    *   **API URL:**
-        1.  A deployer-provided URL (e.g., `VITE_API_URL` for Vercel + Vite builds) takes highest priority. If detected and used, the API URL input in Settings is hidden.
-        2.  If no deployer URL is detected, the user can enter a custom URL in Settings.
-        3.  If neither of the above, defaults to `https://generativelanguage.googleapis.com`.
-        4.  **Note:** The `@google/genai` SDK primarily uses standard Google API endpoints. Custom API URLs might have limited or no effect on where the SDK sends requests.
-    *   **Gemini Model Name:** Specify the Gemini model for Level 2 AI (defaults to `gemini-2.5-flash-preview-05-20`).
-    *   **Ignored Folders:** Specify folders to exclude from L1 prompt, collapse in tree, and skip for L2 modifications.
-*   **Real-time Status Bar:** Provides feedback on current operations, progress, and errors.
+*   **Project Upload:** Upload an entire project folder.
+*   **Interactive File Tree & Viewer:** Navigate structure, view text files, render images.
+*   **Level 1 Prompt Helper:** Assists in generating a structured prompt for your chosen Level 1 AI.
+*   **Level 1 Output Processing:** Parses structured output from your Level 1 AI.
+*   **Dual-Mode Level 2 AI Execution:**
+    *   **Backend Proxy (Default):** Client sends modification details to `/api/gemini`. Proxy uses deployer-configured `GEMINI_API_KEY` and optionally `GEMINI_API_URL`.
+    *   **Client-Side Direct (Optional):** If user provides their API key and optional API URL in settings, calls are made directly from the browser.
+    *   Parallel execution based on Level 1 AI's suggested thread count.
+*   **In-Memory File Updates:** Applies modifications from Level 2 AI to the in-browser files.
+*   **Configurable Settings:**
+    *   **Your Gemini API Key (L2 AI):** Optional. If provided, L2 AI calls are made client-side.
+    *   **Your Gemini API URL (L2 AI):** Optional. Used with your API key for client-side calls. Defaults to `https://generativelanguage.googleapis.com`.
+    *   **Gemini Model Name (L2 AI):** Specify the model for L2 AI calls (used in both modes).
+    *   **Ignored Folders:** Exclude from L1 prompt, collapse in tree, skip L2 modifications.
+*   **Real-time Status Bar:** Feedback on operations, progress, errors.
 *   **Path Auto-Correction:** Attempts to correct file paths from L1 AI output.
 
 ## Workflow
 
-1.  **Setup API Configuration (Settings Panel):**
-    *   **Gemini API Key:** You can enter your API key here. If you leave this blank, the application will attempt to use an API key provided by the deployer (e.g., `VITE_API_KEY` if deployed on Vercel with a Vite build, or set in your local `.env.local` file for Vite development).
-    *   **Gemini API URL:**
-        *   If the deployer has configured an environment variable (e.g., `VITE_API_URL`), this field may be hidden.
-        *   Otherwise, you can enter your own API URL, or leave it blank for the default.
-        *   **Important SDK Note:** The `@google/genai` SDK typically manages its own API endpoints.
-    *   Optionally, set the **Gemini Model Name**.
+1.  **Setup AI Configuration (Settings Panel):**
+    *   To use **Mode 1 (Backend Proxy - Default)**: Leave "Your Gemini API Key" blank. The app will use the deployer-configured proxy.
+    *   To use **Mode 2 (Client-Side Direct)**: Provide "Your Gemini API Key" and optionally "Your Gemini API URL".
+    *   Set the **Gemini Model Name** (for L2 AI calls).
     *   Optionally, customize **Ignored Folders**.
 2.  **Upload Project:** Click "Upload Project Folder".
 3.  **Prepare Level 1 AI Prompt (Level 1 Panel - Step 1):**
-    *   Describe your requirements.
+    *   Describe requirements.
     *   Click "Prepare/Refresh L1 Prompt Template".
-    *   Review and edit the generated prompt.
+    *   Review and edit.
 4.  **Use External Level 1 AI (Manual Step):**
-    *   Copy the L1 prompt.
-    *   Paste into your chosen powerful LLM and get the structured response.
+    *   Copy L1 prompt.
+    *   Paste into your chosen LLM and get the structured response.
 5.  **Process Level 1 AI Output (Level 1 Panel - Step 2):**
-    *   Paste the AI's output.
-    *   Click "Execute Modifications (Calls Level 2 AI)".
-6.  **Concurrent Execution & File Updates:** The app processes instructions and updates files in-memory using concurrent calls to the Gemini API via the SDK.
-7.  **Review Changes:** View updated files in the editor. Changes are in-memory.
+    *   Paste AI's output.
+    *   Click "Execute Modifications". This will trigger L2 AI calls.
+6.  **Concurrent Execution & File Updates:** Files are updated in-memory.
+7.  **Review Changes.**
 
 ## Technical Details
 
 *   **Frontend:** React (v19) with TypeScript, Tailwind CSS.
+*   **Backend Proxy (for Level 2 AI - Default Mode):** Vercel Serverless Function (e.g., `api/gemini.ts`).
+    *   Handles the deployer's `GEMINI_API_KEY` and optionally `GEMINI_API_URL` securely.
+    *   Uses `@google/genai` SDK to call the Gemini API.
 *   **AI Integration:**
     *   **Level 1 (Analysis):** User-managed.
-    *   **Level 2 (Modification):** Google Gemini API via `@google/genai` SDK. Model configurable (defaults to `gemini-2.5-flash-preview-05-20`).
-*   **Environment Variables (for Deployers):**
-    *   For Vercel deployments using Vite build (recommended):
-        *   `VITE_API_KEY`: Deployer can set a global API key. App reads via `import.meta.env.VITE_API_KEY`.
-        *   `VITE_API_URL`: Deployer can set a global API URL. App reads via `import.meta.env.VITE_API_URL`.
-*   **Core Logic:** In-memory file system, structured text parsing, concurrent API calls.
-*   **Bundling/Serving:** ES Modules via import map (for basic local serving) or Vite (for development and Vercel builds).
+    *   **Level 2 (Modification):**
+        *   Client-side direct calls if user API key provided.
+        *   Via the backend proxy (default) if no user API key provided.
+*   **Environment Variables (for Deployers on Vercel - for Backend Proxy Mode):**
+    *   `GEMINI_API_KEY`: (Required for Backend Proxy L2 AI) Your Google Gemini API Key.
+    *   `GEMINI_API_URL`: (Optional for Backend Proxy L2 AI) A custom API endpoint for Gemini. If not set, defaults to Google's production endpoint.
+    *   These are set in Vercel project settings for the serverless functions, **NOT prefixed with `VITE_`**. The backend proxy (`api/gemini.ts`) reads these via `process.env`.
+*   **Bundling/Serving:** Client-side with ES Modules/Vite. Serverless functions handled by Vercel.
 
 ## How to Run (Local Development)
 
-**Option 1: Simple HTTP Server (Basic)**
-1.  Serve files with any local HTTP server (e.g., `npx serve .`).
-2.  Access via `http://localhost:PORT`. API keys must be entered in settings.
-
-**Option 2: Using Vite (Recommended for Enhanced Development)**
+**Using Vite & Vercel CLI (Recommended for Full Functionality, including Backend Proxy)**
 1.  Install Node.js.
-2.  Run `npm install` (if `package.json` with Vite as a dev dependency is added) or `npm install -g vite`.
-3.  Run `vite` in the project directory.
-4.  **Local Environment Variables with Vite:**
-    *   An example file `.env.local` is provided in the project root.
-    *   You can copy it to `.env` or use it as is.
-    *   Edit this file to add your `VITE_API_KEY=your_local_api_key` and `VITE_API_URL=your_local_api_url` (optional).
-    *   The application (`App.tsx`) is configured to read these via `import.meta.env`.
-5.  Access: Vite provides a URL (e.g., `http://localhost:5173`).
+2.  Install Vercel CLI: `npm install -g vercel`.
+3.  Run `npm install` (if a `package.json` with dependencies like `react`, `tailwindcss` is present, or install them manually).
+4.  **Local Environment Variables (for Backend Proxy):**
+    *   Create a `.env.local` file in the project root (this file is usually gitignored).
+    *   To test the backend proxy mode, add the deployer's Gemini API key and optionally URL:
+        *   `GEMINI_API_KEY=your_actual_gemini_api_key_for_proxy`
+        *   `GEMINI_API_URL=your_optional_custom_api_url_for_proxy` (If not set, defaults to Google's endpoint)
+    *   The Vercel CLI (`vercel dev`) will pick up these variables for the local serverless function environment.
+5.  Run `vercel dev` in the project directory. This will serve the frontend and run the `api/gemini.ts` function locally.
+6.  Access the URL provided by `vercel dev` (e.g., `http://localhost:3000`).
+7.  In the app's settings panel, you can leave "Your Gemini API Key" blank to test the proxy, or fill it in to test direct client-side calls.
+
+**Simpler Frontend-Only Serving (Backend Proxy will not work)**
+1.  Serve frontend files with Vite: `npm install -g vite` then `vite`.
+2.  If you don't provide "Your Gemini API Key" in settings, L2 AI calls will fail as they would attempt to reach `/api/gemini` which isn't running in this mode. You must provide your own key for client-side calls.
 
 ## Deployment
 
-### Vercel (Recommended with Vite Build)
+### Vercel (Recommended for Backend Proxy Functionality)
 
 1.  **Push to Git.**
 2.  **Import to Vercel.**
-    *   **Framework Preset:** Select "Vite" (or "Other" and configure build command).
-    *   **Build Command:** Ensure it's `vite build` or `npm run build` (if your `package.json` has `vite build` as the build script). The provided Vercel build log confirms `vite build` is being used.
-    *   **Output Directory:** Vercel usually detects this correctly for Vite (`dist`).
-3.  **Configure Environment Variables on Vercel:**
+    *   **Framework Preset:** Select "Vite" (or "Other" and configure build command `vite build`).
+    *   **Output Directory:** Vercel usually detects this for Vite (`dist`).
+    *   Vercel will automatically detect and deploy the serverless function in the `api` directory.
+3.  **Configure Environment Variables on Vercel (for Backend Proxy):**
     *   In Vercel project settings -> "Environment Variables".
-    *   **CRITICAL:** Add your environment variables with the `VITE_` prefix:
-        *   `VITE_API_KEY`: Your Google Gemini API Key.
-        *   `VITE_API_URL`: (Optional) Your custom API URL/proxy for Gemini.
-    *   The application (`App.tsx`) is now configured to read these `VITE_` prefixed variables from `import.meta.env`. This is the correct way for Vite builds on Vercel.
+    *   Add your **server-side** Gemini API key and optional URL for the proxy:
+        *   Name: `GEMINI_API_KEY`, Value: Your_Actual_Google_Gemini_API_Key_For_Proxy_Mode
+        *   Name: `GEMINI_API_URL`, Value: Your_Optional_Custom_API_URL_For_Proxy (If not set, uses Google's default)
+    *   **Do NOT prefix with `VITE_`**, as these keys are for the backend proxy.
 4.  **Deploy.**
+5.  End-users of your deployed app can optionally use their own API key via the settings panel for client-side calls.
 
 ## Important Considerations
 
-*   **API Key Security:** User-entered keys are in browser state. Deployer keys (`VITE_API_KEY` on Vercel) are embedded during the Vite build process if configured correctly. For local development, ensure your `.env` or `.env.local` file is in your `.gitignore`.
+*   **API Key Security:**
+    *   **Backend Proxy Mode:** The deployer's `GEMINI_API_KEY` (and `GEMINI_API_URL`) are securely stored as server-side environment variables on Vercel.
+    *   **Client-Side Mode:** If a user enters their API key in the settings, that key is used in their browser and is subject to client-side exposure risks for that user's session. Users should be aware of this if they use their own keys.
 *   **Level 1 AI Output Format:** Strict adherence is crucial.
 *   **In-Memory Operations:** Refreshing clears data.
+*   **Proxy Function:** The `/api/gemini` function is essential for the default L2 AI mode.
 
 ## Future Enhancements (Potential Ideas)
 
 *   Save/Download project.
 *   Git integration.
 *   Diff visualization.
+*   Authentication/Authorization for the proxy endpoint if the app is public.

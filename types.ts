@@ -55,7 +55,7 @@ export enum AppStatus {
   ERROR = '发生错误',
 }
 
-// Define a type for the API response structure from Gemini (via fetch)
+// Define a type for the API response structure from Gemini (via fetch from proxy)
 export interface GeminiApiResponse {
   candidates?: Array<{
     content?: {
@@ -75,11 +75,11 @@ export interface GeminiApiResponse {
       probability: string;
     }>;
   };
-  // If the proxy modifies the response to include a direct text field
   text?: string; 
-  error?: { // Standard Google API error structure
-    code: number;
-    message: string;
-    status: string;
+  error?: { 
+    message: string; // Consistently provided by the proxy
+    details?: any;    // Provided by the proxy (e.g., error.cause)
+    code?: number;    // Optional, as not provided by current proxy implementation in its JSON
+    status?: string;  // Optional, as not provided by current proxy implementation in its JSON (proxy sets HTTP status code)
   }
 }
